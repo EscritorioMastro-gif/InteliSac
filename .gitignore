@@ -1,0 +1,11 @@
+backend/.venv/
+backend/.env
+backend/*.db
+__pycache__/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+whatsapp-gateway/node_modules/
+whatsapp-gateway/.env
+# Sessão do WhatsApp = acesso ao número. Nunca versionar nem compartilhar.
+whatsapp-gateway/sessions/
