@@ -115,6 +115,7 @@ def register_message(
     data: dict | None = None,
     count_unread: bool = True,
     open_if_needed: bool = True,
+    preview: str | None = None,
 ) -> tuple[Message, Events]:
     """Grava uma mensagem, abrindo chamado quando necessário (regra do Digisac).
 
@@ -150,7 +151,8 @@ def register_message(
     if ticket:
         ticket.last_message_at = stamp
     contact.last_message_at = stamp
-    contact.last_message = text
+    # prévia na lista de conversas: o texto/legenda, ou "[Imagem]", "[Documento] x.pdf"...
+    contact.last_message = text or preview or ""
     if not is_from_me and count_unread:
         contact.unread = (contact.unread or 0) + 1
     db.flush()
@@ -238,14 +240,27 @@ def close_ticket(
     ]
 
 
+def notify_info(db: Session, msg: Message) -> dict:
+    """Dados extras do evento message.created, para a tela decidir se avisa o atendente
+    (som/notificação): de quem é o chamado e o nome do contato."""
+    contact = db.get(Contact, msg.contact_id)
+    ticket = db.get(Ticket, msg.ticket_id) if msg.ticket_id else None
+    return {
+        "contactName": (contact.internal_name or contact.name) if contact else None,
+        "ticket": {"userId": ticket.user_id, "departmentId": ticket.department_id} if ticket else None,
+    }
+
+
 def find_or_create_contact(
     db: Session,
     service: Service,
     number: str | None,
     name: str | None = None,
     jid: str | None = None,
+    is_group: bool = False,
 ) -> tuple[Contact, Events]:
-    """Acha o contato pelo jid do WhatsApp (ou pelo número) e completa os dados que faltarem."""
+    """Acha o contato pelo jid do WhatsApp (ou pelo número) e completa os dados que faltarem.
+    Grupos: o "contato" é o próprio grupo (jid @g.us) e o nome acompanha o nome do grupo."""
     if not number and not jid:
         raise ValueError("Contato sem número e sem jid")
     contact = None
@@ -260,15 +275,18 @@ def find_or_create_contact(
             contact.jid, changed = jid, True
         if number and not contact.number:
             contact.number, changed = number, True
-        if name and (not contact.name or contact.name == contact.number):
+        if name and (not contact.name or contact.name == contact.number or (is_group and contact.name != name)):
             contact.name, changed = name, True
+        if is_group and not contact.is_group:
+            contact.is_group, changed = True, True
         return contact, ([("contact.updated", contact.to_dict())] if changed else [])
     contact = Contact(
         account_id=service.account_id,
         service_id=service.id,
         number=number,
         jid=jid,
-        name=name or number or "Contato",
+        name=name or number or ("Grupo" if is_group else "Contato"),
+        is_group=is_group,
     )
     db.add(contact)
     db.flush()

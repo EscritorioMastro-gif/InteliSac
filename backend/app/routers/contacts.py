@@ -1,10 +1,10 @@
 """Contatos + ações do chamado atual do contato (mesmos caminhos do Digisac)."""
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import ticketing
+from .. import avatars, ticketing
 from ..db import get_db
 from ..deps import current_user, paginate
 from ..models import Contact, Department, Service, Tag, Ticket, User
@@ -40,6 +40,7 @@ async def _emit_all(account_id: str, events):
 @router.get("")
 def list_contacts(
     request: Request,
+    background: BackgroundTasks,
     page: int = 1,
     perPage: int = 40,
     q: str | None = None,
@@ -66,15 +67,41 @@ def list_contacts(
         else:
             query = _visible_ticket_filter(query, user)
     query = query.order_by(Contact.last_message_at.is_(None), Contact.last_message_at.desc(), Contact.name)
-    return paginate(query, page, perPage)
+    page_data = paginate(query, page, perPage)
+    _fotos(db, page_data["data"], background)
+    return page_data
+
+
+def _fotos(db: Session, contatos: list[dict], background: BackgroundTasks | None) -> None:
+    """Põe o link da foto do perfil e agenda a busca das fotos que faltam (ou têm mais de 7 dias)."""
+    ids = [c["id"] for c in contatos]
+    if not ids:
+        return
+    linhas = (
+        db.query(Contact.id, Contact.jid, Contact.avatar_path, Contact.avatar_checked_at, Service.type)
+        .join(Service, Service.id == Contact.service_id)
+        .filter(Contact.id.in_(ids))
+        .all()
+    )
+    avatars.attach_avatars(contatos, {r.id: r.avatar_path for r in linhas})
+    if background is not None:
+        faltando = [r.id for r in linhas if r.type == "whatsapp" and avatars.needs_refresh(r)][:20]
+        if faltando:
+            background.add_task(avatars.refresh_many, faltando)
 
 
 @router.get("/{contact_id}")
-def get_contact(contact_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def get_contact(
+    contact_id: str,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     contact = _get_contact(db, user, contact_id)
     data = contact.to_dict()
     ticket = ticketing.current_ticket(db, contact)
     data["currentTicket"] = ticket.to_dict() if ticket else None
+    _fotos(db, [data], background)
     return data
 
 

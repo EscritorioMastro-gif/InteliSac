@@ -59,7 +59,7 @@ export default function Contatos() {
             {itens.length === 0 && <tr className="empty"><td colSpan={5}>{busca ? "Nenhum contato encontrado." : "Nenhum contato ainda. Eles aparecem aqui quando mandam mensagem."}</td></tr>}
             {itens.map((c) => (
               <tr key={c.id}>
-                <td><span className="row gap"><Avatar nome={c.internalName || c.name} size={28} />{c.internalName || c.name}</span></td>
+                <td><span className="row gap"><Avatar nome={c.internalName || c.name} size={28} url={c.avatarUrl} grupo={c.isGroup} />{c.internalName || c.name}</span></td>
                 <td>{c.data?.number}</td>
                 <td>{c.tagIds.map((id) => tagById(id)).filter(Boolean).map((t) => <span key={t.id} className="tag" style={{ background: t.color }}>{t.label}</span>)}</td>
                 <td>{c.currentTicketId ? <span className="chip">Aberto</span> : <span className="muted">—</span>}</td>

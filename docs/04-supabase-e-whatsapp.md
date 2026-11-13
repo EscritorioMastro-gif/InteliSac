@@ -52,6 +52,19 @@ cd C:\Users\gabri\projetos\InteliSac\backend; .\.venv\Scripts\python.exe -m app.
 
 Plano grátis do Supabase: o projeto é **pausado após 7 dias sem uso**. Para produção, vale o plano pago.
 
+### Arquivos das conversas (Supabase Storage)
+
+Fotos, áudios, vídeos e documentos ficam no bucket **privado** `intelisac-midia`. O backend cria o
+bucket sozinho ao iniciar. Só o backend acessa o bucket, usando a chave secret. A tela recebe links
+assinados que valem 1 hora; ao reabrir a conversa, links novos são gerados.
+
+- Limite: **50 MB por arquivo**, que é o padrão do Supabase. No plano Pro dá para subir em
+  Storage → Settings → "Upload file size limit". Depois, ajuste `MAX_BYTES` em
+  `backend/app/storage.py` e `MAX_ARQUIVO` em `frontend/src/components/Midia.jsx`.
+- Plano Pro: 100 GB de arquivos e 250 GB de download por mês incluídos, mais backup diário.
+- Arquivos recebidos que não puderem ser baixados ou guardados continuam aparecendo na conversa
+  como "[Imagem]", "[Documento] nome.pdf" etc., com o aviso do motivo.
+
 ## 2. Login pelo Supabase Auth
 
 Com o Supabase Auth ligado, o e-mail e a senha de cada pessoa ficam no Supabase (Authentication →
@@ -144,7 +157,11 @@ sem pedir QR de novo. Essa pasta equivale a acesso ao número: não copie nem co
 - **Dois sistemas no mesmo número.** Enquanto o Digisac estiver ligado, cada mensagem de cliente
   abre chamado nos dois. Combine com a equipe por qual sistema responder, para ninguém responder
   duas vezes.
-- **Ainda não suportado:** grupos (ignorados), arquivos de mídia (aparecem como `[Imagem]`,
-  `[Áudio]`, `[Documento] nome.pdf`), confirmação de leitura. Previstos para a fase de mídia.
+- **Arquivos:**
+  - **Recebidos:** foto, vídeo, áudio, documento e figurinha ficam salvos e aparecem na conversa.
+    A foto abre grande ao clicar, e tudo tem o botão Baixar.
+  - **Enviados:** pelo clipe, arrastando para a conversa ou colando um print com Ctrl+V. A legenda
+    vai assinada com o nome do colaborador.
+- **Ainda não suportado:** grupos (ignorados), confirmação de leitura, gravar áudio pelo navegador.
 - Se o aparelho for removido pelo celular, o status vira "Desconectado". É só clicar em **Conectar**
   e ler o QR de novo.

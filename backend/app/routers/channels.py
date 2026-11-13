@@ -32,7 +32,10 @@ async def _receive(db: Session, service: Service, body: dict) -> dict:
         db, contact, text, is_from_me=False, msg_type=body.get("type") or "chat", external_id=body.get("externalId")
     )
     db.commit()
+    final = {**msg.to_dict(), **ticketing.notify_info(db, msg)}
     for name, payload in events + evs:
+        if name == "message.created" and payload.get("id") == msg.id:
+            payload = final
         await emit(service.account_id, name, payload)
     return msg.to_dict()
 

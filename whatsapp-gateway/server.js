@@ -19,6 +19,7 @@ const makeWASocket = baileys.makeWASocket ?? baileys.default?.default ?? baileys
 const {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   generateMessageIDV2,
   getContentType,
@@ -130,6 +131,32 @@ async function connect(s) {
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", (u) => onConnectionUpdate(s, sock, u).catch((e) => log(`[${s.id}] erro em connection.update`, e)));
   sock.ev.on("messages.upsert", (m) => onMessages(s, sock, m).catch((e) => log(`[${s.id}] erro ao processar mensagem`, e)));
+  sock.ev.on("messages.update", (u) => onStatus(s, u));
+}
+
+// ✓ / ✓✓ / ✓✓ azul: status das mensagens que NÓS enviamos (pelo InteliSac, celular ou outro aparelho)
+const ACK = { 0: "error", 1: "pending", 2: "sent", 3: "delivered", 4: "read", 5: "played" };
+
+function onStatus(s, updates) {
+  for (const { key, update } of updates || []) {
+    if (!key?.id || !key.fromMe || update?.status === undefined || update?.status === null) continue;
+    const ack = ACK[update.status];
+    if (ack) postEvent({ type: "ack", serviceId: s.id, messageId: key.id, ack });
+  }
+}
+
+// Nome dos grupos (cache de 1 h para não consultar o WhatsApp a cada mensagem)
+const nomesGrupo = new Map();
+async function nomeDoGrupo(sock, jid) {
+  const c = nomesGrupo.get(jid);
+  if (c && Date.now() - c.em < 3600_000) return c.nome;
+  try {
+    const meta = await sock.groupMetadata(jid);
+    nomesGrupo.set(jid, { nome: meta?.subject || null, em: Date.now() });
+    return meta?.subject || null;
+  } catch {
+    return c?.nome || null;
+  }
 }
 
 async function onConnectionUpdate(s, sock, { connection, lastDisconnect, qr }) {
@@ -189,12 +216,42 @@ const IGNORED_TYPES = new Set([
   "encReactionMessage",
 ]);
 
-function toSeconds(t) {
+// Números do WhatsApp podem vir como Long (protobuf)
+function toNum(t) {
   if (!t) return null;
   if (typeof t === "number") return t;
   if (typeof t.toNumber === "function") return t.toNumber();
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
+}
+const toSeconds = toNum;
+
+const MAX_MEDIA_BYTES = Number(process.env.MAX_MEDIA_MB || 50) * 1024 * 1024;
+
+async function baixarMidia(s, sock, msg, info) {
+  if (info.size && info.size > MAX_MEDIA_BYTES) {
+    return { error: `arquivo grande demais (${Math.round(info.size / 1048576)} MB)` };
+  }
+  try {
+    const buf = await downloadMediaMessage(msg, "buffer", {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    if (buf.length > MAX_MEDIA_BYTES) return { error: `arquivo grande demais (${Math.round(buf.length / 1048576)} MB)` };
+    return { base64: buf.toString("base64"), mimetype: info.mimetype, fileName: info.fileName, size: buf.length };
+  } catch (e) {
+    log(`[${s.id}] não consegui baixar a mídia ${msg.key?.id}: ${e.message}`);
+    return { error: `não consegui baixar o arquivo: ${e.message}` };
+  }
+}
+
+// Mídia: text = legenda ou rótulo (se o arquivo não puder ser baixado, o rótulo aparece na conversa)
+function midia(type, node, label, fileName) {
+  const caption = node?.caption || "";
+  return {
+    type,
+    text: caption || label,
+    caption,
+    label,
+    media: { mimetype: node?.mimetype || null, fileName: fileName || null, size: toNum(node?.fileLength) },
+  };
 }
 
 function parseContent(ctype, c) {
@@ -204,17 +261,15 @@ function parseContent(ctype, c) {
     case "extendedTextMessage":
       return { type: "chat", text: c.extendedTextMessage?.text };
     case "imageMessage":
-      return { type: "image", text: c.imageMessage?.caption || "[Imagem]" };
+      return midia("image", c.imageMessage, "[Imagem]");
     case "videoMessage":
-      return { type: "video", text: c.videoMessage?.caption || "[Vídeo]" };
+      return midia("video", c.videoMessage, "[Vídeo]");
     case "audioMessage":
-      return { type: c.audioMessage?.ptt ? "ptt" : "audio", text: "[Áudio]" };
-    case "documentMessage": {
-      const d = c.documentMessage || {};
-      return { type: "document", text: `[Documento] ${d.fileName || ""}${d.caption ? "\n" + d.caption : ""}`.trim() };
-    }
+      return midia(c.audioMessage?.ptt ? "ptt" : "audio", c.audioMessage, "[Áudio]");
+    case "documentMessage":
+      return midia("document", c.documentMessage, `[Documento] ${c.documentMessage?.fileName || ""}`.trim(), c.documentMessage?.fileName);
     case "stickerMessage":
-      return { type: "sticker", text: "[Figurinha]" };
+      return midia("sticker", c.stickerMessage, "[Figurinha]");
     case "locationMessage":
     case "liveLocationMessage": {
       const l = c[ctype] || {};
@@ -250,11 +305,27 @@ async function resolvePhoneJid(sock, key) {
   return null;
 }
 
+// Quem mandou a mensagem dentro de um grupo (número quando o WhatsApp informa)
+async function remetenteDoGrupo(sock, key) {
+  const part = key.participant || "";
+  let pn = [key.participantAlt, part].find((j) => j && j.endsWith("@s.whatsapp.net")) || null;
+  if (!pn && part.endsWith("@lid")) {
+    try {
+      const r = await sock.signalRepository?.lidMapping?.getPNForLID?.(part);
+      if (r) pn = r.includes("@") ? r : `${r}@s.whatsapp.net`;
+    } catch {
+      /* sem mapeamento */
+    }
+  }
+  return { jid: part || null, number: pn ? pn.split("@")[0].split(":")[0] : null };
+}
+
 async function onMessages(s, sock, { messages, type }) {
   for (const msg of messages || []) {
     const key = msg.key || {};
     const jid = key.remoteJid || "";
-    if (!jid || jid.endsWith("@g.us") || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue; // grupos/status: ainda não
+    if (!jid || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue; // status/canais: não
+    const grupo = jid.endsWith("@g.us");
     const secs = toSeconds(msg.messageTimestamp);
     // "notify" = mensagem nova. "append" = mensagem adicionada (ex.: enviada do celular); aceita só as recentes.
     if (type !== "notify" && !(type === "append" && secs && Date.now() / 1000 - secs < 600)) continue;
@@ -262,10 +333,32 @@ async function onMessages(s, sock, { messages, type }) {
     const content = normalizeMessageContent(msg.message);
     if (!content) continue;
     const ctype = getContentType(content);
+    // "Apagar para todos" feito pelo cliente (ou pelo celular/outro aparelho): avisa o backend
+    if (ctype === "protocolMessage") {
+      const pm = content.protocolMessage;
+      if ((pm?.type ?? 0) === 0 && pm?.key?.id) {
+        postEvent({ type: "revoke", serviceId: s.id, messageId: pm.key.id, fromMe: !!key.fromMe });
+      }
+      continue;
+    }
     if (!ctype || IGNORED_TYPES.has(ctype)) continue;
     const parsed = parseContent(ctype, content);
     if (!parsed?.text) continue;
-    const pnJid = await resolvePhoneJid(sock, key);
+    const pnJid = grupo ? null : await resolvePhoneJid(sock, key);
+    const media = parsed.media ? await baixarMidia(s, sock, msg, parsed.media) : null;
+    let groupName = null;
+    let sender = null;
+    if (grupo) {
+      groupName = await nomeDoGrupo(sock, jid);
+      if (!key.fromMe) sender = { ...(await remetenteDoGrupo(sock, key)), name: msg.pushName || null };
+    }
+    // Resposta citando outra mensagem
+    const ctx = content[ctype]?.contextInfo;
+    const qm = ctx?.quotedMessage ? normalizeMessageContent(ctx.quotedMessage) : null;
+    const quotedText = qm
+      ? qm.conversation || qm.extendedTextMessage?.text || qm.imageMessage?.caption || qm.videoMessage?.caption ||
+        qm.documentMessage?.fileName || (qm.audioMessage ? "[Áudio]" : qm.imageMessage ? "[Imagem]" : null)
+      : null;
     postEvent({
       type: "message",
       serviceId: s.id,
@@ -274,10 +367,18 @@ async function onMessages(s, sock, { messages, type }) {
         jid,
         pnJid,
         number: pnJid ? pnJid.split("@")[0].split(":")[0] : null,
-        pushName: key.fromMe ? null : msg.pushName || null,
+        pushName: key.fromMe || grupo ? null : msg.pushName || null,
+        isGroup: grupo,
+        groupName,
+        sender,
         fromMe: !!key.fromMe,
         type: parsed.type,
         text: parsed.text,
+        caption: parsed.caption ?? null,
+        label: parsed.label ?? null,
+        media,
+        quotedId: ctx?.stanzaId || null,
+        quotedText: quotedText || null,
         timestamp: secs,
       },
     });
@@ -294,21 +395,73 @@ function httpError(status, message) {
   return Object.assign(new Error(message), { status });
 }
 
-async function sendText(s, { jid, number, text }) {
-  if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
-  if (!text || !String(text).trim()) throw httpError(422, "Mensagem vazia");
-  let to = jid;
-  if (!to) {
-    const digits = String(number || "").replace(/\D/g, "");
-    if (!digits) throw httpError(422, "Informe jid ou number");
-    const [found] = (await s.sock.onWhatsApp(digits)) || [];
-    if (!found?.exists) throw httpError(404, "Este número não tem WhatsApp");
-    to = found.jid;
-  }
-  // O id é gerado antes do envio para o "eco" da própria mensagem não voltar como mensagem nova.
+// Mensagem citada ("responder marcando"): o WhatsApp precisa da chave e de um conteúdo de prévia.
+function citada(to, quoted) {
+  if (!quoted?.id) return undefined;
+  return {
+    // em grupo, a citação precisa dizer quem escreveu a mensagem original (participant)
+    key: { remoteJid: to, fromMe: !!quoted.fromMe, id: quoted.id, ...(quoted.participant ? { participant: quoted.participant } : {}) },
+    message: { conversation: String(quoted.text || "") },
+  };
+}
+
+// Opções de envio: id gerado antes (o "eco" não volta como mensagem nova) + citação
+function opcoesEnvio(s, to, quoted) {
   const messageId = generateMessageIDV2 ? generateMessageIDV2(s.sock.user?.id) : undefined;
   if (messageId) rememberSent(s, messageId);
-  const sent = await s.sock.sendMessage(to, { text: String(text) }, messageId ? { messageId } : {});
+  const q = citada(to, quoted);
+  return { ...(messageId ? { messageId } : {}), ...(q ? { quoted: q } : {}) };
+}
+
+async function sendText(s, { jid, number, text, quoted }) {
+  if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
+  if (!text || !String(text).trim()) throw httpError(422, "Mensagem vazia");
+  const to = await destino(s, { jid, number });
+  const sent = await s.sock.sendMessage(to, { text: String(text) }, opcoesEnvio(s, to, quoted));
+  rememberSent(s, sent.key.id);
+  return { id: sent.key.id, jid: to };
+}
+
+// Apagar para todos (só mensagens enviadas por este número)
+async function revoke(s, { jid, id }) {
+  if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
+  if (!jid || !id) throw httpError(422, "Informe jid e id");
+  const sent = await s.sock.sendMessage(jid, { delete: { remoteJid: jid, fromMe: true, id } }, opcoesEnvio(s, jid));
+  rememberSent(s, sent.key.id);
+  return { ok: true };
+}
+
+async function destino(s, { jid, number }) {
+  if (jid) return jid;
+  const digits = String(number || "").replace(/\D/g, "");
+  if (!digits) throw httpError(422, "Informe jid ou number");
+  const [found] = (await s.sock.onWhatsApp(digits)) || [];
+  if (!found?.exists) throw httpError(404, "Este número não tem WhatsApp");
+  return found.jid;
+}
+
+// Envia arquivo. O backend manda um link temporário (Supabase Storage); o WhatsApp baixa daí.
+async function sendMedia(s, { jid, number, url, mimetype, fileName, kind, caption, ptt, quoted, seconds, waveform }) {
+  if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
+  if (!url) throw httpError(422, "Informe url do arquivo");
+  const to = await destino(s, { jid, number });
+  const legenda = caption ? String(caption) : undefined;
+  let content;
+  if (kind === "image") content = { image: { url }, caption: legenda, mimetype };
+  else if (kind === "video") content = { video: { url }, caption: legenda, mimetype };
+  else if (kind === "audio") {
+    content = { audio: { url }, mimetype: ptt ? "audio/ogg; codecs=opus" : mimetype, ptt: !!ptt };
+    // duração e "barrinhas" calculadas pelo backend (como numa gravação feita no celular)
+    if (seconds) content.seconds = Math.round(seconds);
+    if (ptt && Array.isArray(waveform) && waveform.length) content.waveform = Uint8Array.from(waveform);
+  }
+  else content = { document: { url }, mimetype: mimetype || "application/octet-stream", fileName: fileName || "arquivo", caption: legenda };
+  // Áudio não tem legenda no WhatsApp: a legenda/assinatura ("*Gabriel:*") vai como texto logo ANTES
+  if (kind === "audio" && legenda) {
+    const t = await s.sock.sendMessage(to, { text: legenda }, opcoesEnvio(s, to));
+    rememberSent(s, t.key.id);
+  }
+  const sent = await s.sock.sendMessage(to, content, opcoesEnvio(s, to, quoted));
   rememberSent(s, sent.key.id);
   return { id: sent.key.id, jid: to };
 }
@@ -369,6 +522,17 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && action === "") {
       return reply(200, s ? { ...publicState(s), qr: s.qr } : { serviceId: id, status: "disconnected", me: null, qr: null });
     }
+    // Foto do perfil (contato ou grupo). Sem foto ou privacidade fechada: url null
+    if (req.method === "GET" && action === "photo") {
+      if (!s?.sock || s.status !== "connected") return reply(409, { message: "WhatsApp desconectado" });
+      const alvo = url.searchParams.get("jid");
+      if (!alvo) return reply(422, { message: "Informe jid" });
+      try {
+        return reply(200, { url: (await s.sock.profilePictureUrl(alvo, "image")) || null });
+      } catch (e) {
+        return reply(200, { url: null, reason: e.message });
+      }
+    }
     if (req.method !== "POST") return reply(405, { message: "Método não permitido" });
     const body = await readJson(req);
 
@@ -379,6 +543,8 @@ const server = createServer(async (req, res) => {
       return reply(200, { serviceId: id, status: "disconnected" });
     }
     if (action === "send") return reply(200, await sendText(s, body));
+    if (action === "send-media") return reply(200, await sendMedia(s, body));
+    if (action === "delete") return reply(200, await revoke(s, body));
     return reply(404, { message: "Ação desconhecida" });
   } catch (e) {
     if (!e.status) log("erro na requisição", e);

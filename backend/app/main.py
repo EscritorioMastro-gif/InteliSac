@@ -6,7 +6,9 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import migrate
+import logging
+
+from . import migrate, storage
 from .config import settings
 from .realtime import sio
 from .routers import auth, channels, contacts, gateway, me, messages, now, resources, tickets
@@ -16,6 +18,12 @@ from .routers import auth, channels, contacts, gateway, me, messages, now, resou
 async def lifespan(_app: FastAPI):
     # Cria/atualiza as tabelas (SQLite local ou Postgres do Supabase) pelas migrações do Alembic.
     migrate.upgrade()
+    # Bucket privado dos arquivos das conversas (sem Supabase configurado, só os arquivos ficam fora)
+    if settings.supabase_url and settings.supabase_service_role_key:
+        try:
+            storage.ensure_bucket()
+        except storage.StorageError as e:
+            logging.getLogger("intelisac").warning("Storage indisponível: %s", e)
     yield
 
 

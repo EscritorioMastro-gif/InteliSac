@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api } from "../api";
+import { api, apiForm } from "../api";
 import { getSocket } from "../socket";
 import { useMe } from "../App";
 import Modal from "../components/Modal";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
+import Tiques from "../components/Tiques";
+import Midia, { MAX_ARQUIVO, fmtBytes } from "../components/Midia";
 import { useToast } from "../components/Toast";
 
 const ABAS = [
@@ -45,6 +47,14 @@ function quandoCurto(iso) {
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
+// Cor estável por pessoa, para diferenciar quem fala num grupo
+const CORES_GRUPO = ["#0f5e66", "#2a7f62", "#3c6e91", "#7a5c99", "#b5654a", "#8a7a2e", "#9c4f6b", "#4f6d7a"];
+function corDe(chave) {
+  let h = 0;
+  for (const ch of chave || "") h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return CORES_GRUPO[h % CORES_GRUPO.length];
+}
+
 export default function Atendimento() {
   const me = useMe();
   const toast = useToast();
@@ -65,10 +75,26 @@ export default function Atendimento() {
   const [assuntos, setAssuntos] = useState([]);
   const [respostas, setRespostas] = useState([]);
   const [modal, setModal] = useState(null);
+  const [anexos, setAnexos] = useState([]);
+  const [arrastando, setArrastando] = useState(false);
+  const [imagemAberta, setImagemAberta] = useState(null);
+  const [respondendo, setRespondendo] = useState(null);
+  const [destaque, setDestaque] = useState(null);
+  const [gravando, setGravando] = useState(false);
+  const [tempoGravacao, setTempoGravacao] = useState(0);
+  const [enviandoAudio, setEnviandoAudio] = useState(false);
+  const gravacaoRef = useRef(null);
+  const arquivoRef = useRef(null);
   const fimRef = useRef(null);
   const textoRef = useRef(null);
   const selRef = useRef(selId);
   selRef.current = selId;
+  const contatoDaUrl = params.get("contact");
+
+  // Clique na notificação muda o ?contact= da página: abre essa conversa
+  useEffect(() => {
+    if (contatoDaUrl !== selRef.current) setSelId(contatoDaUrl);
+  }, [contatoDaUrl]);
 
   const carregarLista = useCallback(() => {
     api("/contacts", { params: { filter: aba, q: busca || undefined, perPage: 100 } })
@@ -104,6 +130,7 @@ export default function Atendimento() {
   }, []);
 
   useEffect(() => {
+    setRespondendo(null);
     if (!selId) {
       setContato(null);
       setMensagens([]);
@@ -132,13 +159,27 @@ export default function Atendimento() {
       if (tk.contactId === selRef.current) api(`/contacts/${tk.contactId}`).then(setContato);
       recarregar();
     };
+    // Mensagem alterada (ex.: apagada pelo cliente ou por um colega): troca na conversa aberta
+    const onMsgAtualizada = (m) => {
+      if (m.contactId !== selRef.current) return;
+      setMensagens((prev) =>
+        prev.map((x) => {
+          if (x.id !== m.id) return x;
+          // Mesmo arquivo: mantém o link já carregado (a imagem não pisca a cada ✓ que chega)
+          const mesmoArquivo = x.fileUrl && x.data?.file?.path && x.data.file.path === m.data?.file?.path;
+          return mesmoArquivo ? { ...m, fileUrl: x.fileUrl, downloadUrl: x.downloadUrl } : m;
+        })
+      );
+    };
     s.on("message.created", onMsg);
+    s.on("message.updated", onMsgAtualizada);
     s.on("ticket.created", onTicket);
     s.on("ticket.updated", onTicket);
     s.on("contact.updated", recarregar);
     s.on("contact.created", recarregar);
     return () => {
       s.off("message.created", onMsg);
+      s.off("message.updated", onMsgAtualizada);
       s.off("ticket.created", onTicket);
       s.off("ticket.updated", onTicket);
       s.off("contact.updated", recarregar);
@@ -147,9 +188,26 @@ export default function Atendimento() {
     };
   }, [carregarLista]);
 
+  // Desce até a última mensagem quando chega/sai mensagem nova (não quando uma é só alterada)
   useEffect(() => {
     fimRef.current?.scrollIntoView({ block: "end" });
-  }, [mensagens]);
+  }, [mensagens.length, selId]);
+
+  // Contador da gravação de áudio
+  useEffect(() => {
+    if (!gravando) return undefined;
+    const t = setInterval(() => {
+      const g = gravacaoRef.current;
+      if (!g) return;
+      const s = Math.floor((Date.now() - g.inicio) / 1000);
+      setTempoGravacao(s);
+      if (s >= 600) enviarGravacaoRef.current?.(); // limite de 10 minutos: envia o que gravou
+    }, 250);
+    return () => clearInterval(t);
+  }, [gravando]);
+
+  // Trocar de conversa ou sair da tela descarta uma gravação em andamento
+  useEffect(() => () => descartarGravacao(), [selId]);
 
   // Campo de texto cresce conforme o conteúdo
   useEffect(() => {
@@ -168,18 +226,157 @@ export default function Atendimento() {
     e?.preventDefault();
     const t = texto.trim();
     if (!t || !selId || enviando) return;
+    const citando = respondendo;
     setTexto("");
+    setRespondendo(null);
     setEnviando(true);
     try {
-      const m = await api("/messages", { method: "POST", body: { contactId: selId, text: t } });
+      const m = await api("/messages", { method: "POST", body: { contactId: selId, text: t, replyToId: citando?.id } });
       setMensagens((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
       if (m.data?.error) toast.show(`Mensagem não enviada: ${m.data.error}`, "error");
     } catch (err) {
       toast.show(err.message, "error");
       setTexto(t);
+      setRespondendo(citando);
     } finally {
       setEnviando(false);
       textoRef.current?.focus();
+    }
+  };
+
+  // ----- responder marcando e apagar -----
+  const responder = (m) => {
+    setRespondendo(m);
+    textoRef.current?.focus();
+  };
+
+  const podeApagar = (m) =>
+    m.isFromMe && m.type !== "ticket" && !m.data?.deleted && !m.data?.error &&
+    (m.userId === me.id || me.isAdmin) &&
+    Date.now() - new Date(m.createdAt).getTime() < 60 * 3600 * 1000;
+
+  const apagar = async (m) => {
+    if (!window.confirm("Apagar esta mensagem para todos? O cliente também deixa de ver.")) return;
+    try {
+      const atualizada = await api(`/messages/${m.id}`, { method: "DELETE" });
+      setMensagens((prev) => prev.map((x) => (x.id === atualizada.id ? atualizada : x)));
+      toast.show("Mensagem apagada para todos");
+    } catch (e) {
+      toast.show(e.message, "error");
+    }
+  };
+
+  const irPara = (id) => {
+    if (!id) return;
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return toast.show("A mensagem citada não está entre as últimas carregadas", "error");
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setDestaque(id);
+    setTimeout(() => setDestaque(null), 1600);
+  };
+
+  // ----- gravar áudio (mensagem de voz) -----
+  const descartarGravacao = () => {
+    const g = gravacaoRef.current;
+    gravacaoRef.current = null;
+    if (g) {
+      try {
+        g.rec.onstop = null;
+        if (g.rec.state !== "inactive") g.rec.stop();
+      } catch {
+        /* já parado */
+      }
+      g.stream.getTracks().forEach((t) => t.stop());
+    }
+    setGravando(false);
+  };
+
+  const iniciarGravacao = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      return toast.show("Este navegador não permite gravar áudio", "error");
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const tipo = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t));
+      const rec = new MediaRecorder(stream, tipo ? { mimeType: tipo } : undefined);
+      const partes = [];
+      rec.ondataavailable = (e) => e.data.size && partes.push(e.data);
+      rec.start(250);
+      gravacaoRef.current = { rec, stream, partes, inicio: Date.now() };
+      setTempoGravacao(0);
+      setGravando(true);
+    } catch (e) {
+      toast.show(e.name === "NotAllowedError" ? "Permita o uso do microfone no navegador para gravar áudio" : `Microfone indisponível: ${e.message}`, "error");
+    }
+  };
+
+  const enviarGravacao = async () => {
+    const g = gravacaoRef.current;
+    if (!g || !selId) return;
+    gravacaoRef.current = null;
+    setGravando(false);
+    const blob = await new Promise((resolve) => {
+      g.rec.onstop = () => resolve(new Blob(g.partes, { type: g.rec.mimeType || "audio/webm" }));
+      g.rec.stop();
+    });
+    g.stream.getTracks().forEach((t) => t.stop());
+    if (Date.now() - g.inicio < 800 || blob.size < 1500) return toast.show("Áudio muito curto", "error");
+    const citando = respondendo;
+    setRespondendo(null);
+    setEnviandoAudio(true);
+    try {
+      const fd = new FormData();
+      fd.append("contactId", selId);
+      fd.append("voice", "true");
+      if (citando) fd.append("replyToId", citando.id);
+      fd.append("file", blob, `gravacao.${(blob.type.split("/")[1] || "webm").split(";")[0]}`);
+      const m = await apiForm("/messages/media", fd);
+      setMensagens((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+      if (m.data?.error) toast.show(`Áudio não enviado: ${m.data.error}`, "error");
+    } catch (e) {
+      toast.show(e.message, "error");
+    } finally {
+      setEnviandoAudio(false);
+    }
+  };
+  const enviarGravacaoRef = useRef(null);
+  enviarGravacaoRef.current = enviarGravacao;
+
+  // ----- arquivos: clipe, arrastar e soltar, Ctrl+V -----
+  const abrirAnexos = (lista) => {
+    const files = [...(lista || [])].filter(Boolean);
+    if (!files.length || !selId) return;
+    const grandes = files.filter((f) => f.size > MAX_ARQUIVO);
+    if (grandes.length) toast.show(`Arquivo maior que 50 MB não pode ser enviado: ${grandes.map((f) => f.name).join(", ")}`, "error");
+    const ok = files.filter((f) => f.size <= MAX_ARQUIVO && f.size > 0);
+    if (ok.length) setAnexos(ok);
+  };
+
+  const enviarAnexos = async (legenda) => {
+    const lista = anexos;
+    const citando = respondendo;
+    for (let i = 0; i < lista.length; i++) {
+      const fd = new FormData();
+      fd.append("contactId", selId);
+      fd.append("caption", i === 0 ? legenda : "");
+      if (i === 0 && citando) fd.append("replyToId", citando.id);
+      // print colado vem como "image.png": dá um nome melhor
+      const f = lista[i];
+      fd.append("file", f, f.name && f.name !== "image.png" ? f.name : `print-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.png`);
+      const m = await apiForm("/messages/media", fd);
+      setMensagens((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+      if (m.data?.error) toast.show(`Arquivo não enviado: ${m.data.error}`, "error");
+    }
+    setAnexos([]);
+    setRespondendo(null);
+    toast.show(lista.length > 1 ? `${lista.length} arquivos enviados` : "Arquivo enviado");
+  };
+
+  const onPaste = (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) {
+      e.preventDefault();
+      abrirAnexos(files);
     }
   };
 
@@ -212,6 +409,7 @@ export default function Atendimento() {
       }
       if (e.key === "Escape") return setTexto("");
     }
+    if (e.key === "Escape" && respondendo) return setRespondendo(null);
     if (e.key === "Enter" && !e.shiftKey) enviar(e);
   };
 
@@ -229,6 +427,17 @@ export default function Atendimento() {
   const ticket = contato?.currentTicket;
   const nomeDep = (id) => deps.find((d) => d.id === id)?.name || "Sem departamento";
   const nomeUser = (id) => usuarios.find((u) => u.id === id)?.name || "Atendente";
+  const nomeContato = contato?.internalName || contato?.name || "Cliente";
+  const autorCitacao = (r) =>
+    r.fromMe === false ? r.senderName || nomeContato : r.fromMe ? (r.userId ? nomeUser(r.userId) : "Você (celular)") : "Mensagem citada";
+  const resumoMsg = (m) => {
+    if (m.text) return m.text;
+    if (m.type === "document") return `[Documento] ${m.data?.file?.name || ""}`;
+    return { image: "[Imagem]", sticker: "[Figurinha]", video: "[Vídeo]", audio: "[Áudio]", ptt: "[Mensagem de voz]" }[m.type] || "[Mensagem]";
+  };
+  const quemApagou = (d) =>
+    d.deletedBy === "contact" ? "pelo cliente" : d.deletedBy === "device" ? "pelo celular / outro aparelho" : d.deletedBy ? `por ${nomeUser(d.deletedBy)}` : "";
+  const fmtTempo = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   // Mensagens agrupadas por dia
   const itens = [];
@@ -269,10 +478,13 @@ export default function Atendimento() {
           )}
           {contatos.map((c) => (
             <li key={c.id} className={`${c.id === selId ? "sel" : ""} ${c.unread > 0 ? "unread" : ""}`} onClick={() => selecionar(c.id)}>
-              <Avatar nome={c.internalName || c.name} />
+              <Avatar nome={c.internalName || c.name} url={c.avatarUrl} grupo={c.isGroup} />
               <div className="grow">
                 <div className="row">
-                  <strong className="ellipsis">{c.internalName || c.name}</strong>
+                  <strong className="ellipsis">
+                    {c.isGroup && <Icon name="users" size={14} className="group-mark" title="Grupo" />}
+                    {c.internalName || c.name}
+                  </strong>
                   <span className="time-small">{quandoCurto(c.lastMessageAt)}</span>
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
@@ -285,7 +497,25 @@ export default function Atendimento() {
         </ul>
       </section>
 
-      <section className="chat-main">
+      <section
+        className={`chat-main ${arrastando ? "dragging" : ""}`}
+        onDragOver={(e) => {
+          if (contato && e.dataTransfer?.types?.includes("Files")) {
+            e.preventDefault();
+            setArrastando(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget)) setArrastando(false);
+        }}
+        onDrop={(e) => {
+          if (!contato) return;
+          e.preventDefault();
+          setArrastando(false);
+          abrirAnexos(e.dataTransfer?.files);
+        }}
+      >
+        {arrastando && <div className="drop-overlay"><Icon name="paperclip" size={28} />Solte para enviar para {contato?.internalName || contato?.name}</div>}
         {!contato ? (
           <div className="chat-placeholder">
             <div className="big-icon"><Icon name="chat" size={30} /></div>
@@ -297,10 +527,10 @@ export default function Atendimento() {
             <header className="chat-head">
               <div className="who">
                 <button className="icon-btn back-btn" onClick={() => selecionar(null)} aria-label="Voltar para a lista"><Icon name="arrowLeft" /></button>
-                <Avatar nome={contato.internalName || contato.name} size={40} />
+                <Avatar nome={contato.internalName || contato.name} size={40} url={contato.avatarUrl} grupo={contato.isGroup} />
                 <div style={{ minWidth: 0 }}>
                   <strong className="ellipsis">{contato.internalName || contato.name}</strong>{" "}
-                  <span className="muted small">{contato.data?.number}</span>
+                  {contato.isGroup ? <span className="chip"><Icon name="users" size={12} />Grupo do WhatsApp</span> : <span className="muted small">{contato.data?.number}</span>}
                   <div className="meta">
                     {ticket ? (
                       <>
@@ -341,18 +571,56 @@ export default function Atendimento() {
                   const texto = m.userId && !/ por |pelo cliente/.test(m.text || "") ? `${m.text} por ${nomeUser(m.userId)}` : m.text;
                   return <div key={m.id} className="event"><Icon name="clock" size={13} />{texto} · {hora(m.createdAt)}</div>;
                 }
+                const apagada = m.data?.deleted;
+                const r = m.data?.replyTo;
                 return (
-                  <div key={m.id} className={`bubble ${m.isFromMe ? "me" : "them"} ${m.data?.error ? "failed" : ""}`}>
+                  <div
+                    key={m.id}
+                    id={`msg-${m.id}`}
+                    className={`bubble ${m.isFromMe ? "me" : "them"} ${m.data?.error ? "failed" : ""} ${m.data?.file && !apagada ? "has-media" : ""} ${apagada ? "deleted" : ""} ${destaque === m.id ? "highlight" : ""}`}
+                  >
+                    {!apagada && (
+                      <div className="bubble-actions">
+                        <button type="button" className="icon-btn" onClick={() => responder(m)} title="Responder marcando esta mensagem" aria-label="Responder"><Icon name="reply" size={15} /></button>
+                        {podeApagar(m) && (
+                          <button type="button" className="icon-btn" onClick={() => apagar(m)} title="Apagar para todos" aria-label="Apagar para todos"><Icon name="trash" size={15} /></button>
+                        )}
+                      </div>
+                    )}
                     {m.isFromMe && m.userId && (
                       <div className="author" title={m.data?.signed ? "O cliente recebeu a mensagem assinada com este nome" : undefined}>
                         {nomeUser(m.userId)}{m.data?.signed && <span className="signed"> · assinada</span>}
                       </div>
                     )}
                     {m.isFromMe && !m.userId && m.data?.origin === "device" && <div className="author device">Pelo celular / outro aparelho</div>}
-                    <div className="text">{m.text}</div>
+                    {!m.isFromMe && m.data?.sender && (
+                      <div className="author sender" style={{ color: corDe(m.data.sender.jid || m.data.sender.number) }}>
+                        {m.data.sender.name || m.data.sender.number || "Participante"}
+                        {m.data.sender.name && m.data.sender.number && <span className="sender-number"> · {m.data.sender.number}</span>}
+                      </div>
+                    )}
+                    {r && (
+                      <button type="button" className="quote" onClick={() => irPara(r.id)} title={r.id ? "Ir para a mensagem citada" : undefined}>
+                        <strong>{autorCitacao(r)}</strong>
+                        <span>{r.text}</span>
+                      </button>
+                    )}
+                    {apagada ? (
+                      <>
+                        <div className="deleted-label"><Icon name="ban" size={14} /> Mensagem apagada {quemApagou(m.data)}</div>
+                        {(m.text || m.data?.file) && <div className="deleted-original" title="Conteúdo original, visível só para a equipe">{resumoMsg(m)}</div>}
+                      </>
+                    ) : (
+                      <>
+                        <Midia m={m} onAbrirImagem={setImagemAberta} onLinkExpirado={() => carregarConversa(selId)} />
+                        {m.text && <div className="text">{m.text}</div>}
+                        {m.data?.fileError && <div className="fail small">Arquivo não pôde ser salvo ({m.data.fileError})</div>}
+                      </>
+                    )}
                     <div className="time">
                       {hora(m.createdAt)}
                       {m.data?.error && <span className="fail"> · não enviada</span>}
+                      <Tiques m={m} />
                     </div>
                   </div>
                 );
@@ -360,6 +628,26 @@ export default function Atendimento() {
               <div ref={fimRef} />
             </div>
 
+            {respondendo && (
+              <div className="reply-bar">
+                <Icon name="reply" size={16} />
+                <div className="quote static">
+                  <strong>Respondendo {autorCitacao({ fromMe: respondendo.isFromMe, userId: respondendo.userId, senderName: respondendo.data?.sender?.name })}</strong>
+                  <span>{resumoMsg(respondendo)}</span>
+                </div>
+                <button type="button" className="icon-btn" onClick={() => setRespondendo(null)} title="Cancelar resposta (Esc)" aria-label="Cancelar resposta"><Icon name="x" size={16} /></button>
+              </div>
+            )}
+
+            {gravando ? (
+              <div className="composer recording">
+                <button type="button" className="icon-btn" onClick={descartarGravacao} title="Descartar gravação" aria-label="Descartar gravação"><Icon name="trash" size={20} /></button>
+                <span className="rec-dot" aria-hidden="true" />
+                <span className="rec-time">{fmtTempo(tempoGravacao)}</span>
+                <span className="muted grow">Gravando… clique na seta para enviar</span>
+                <button type="button" className="primary" onClick={enviarGravacao} title="Enviar áudio" aria-label="Enviar áudio"><Icon name="send" size={17} /></button>
+              </div>
+            ) : (
             <form className="composer" onSubmit={enviar}>
               {sugestoes.length > 0 && (
                 <ul className="suggestions" role="listbox">
@@ -370,22 +658,69 @@ export default function Atendimento() {
                   ))}
                 </ul>
               )}
+              <input
+                ref={arquivoRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => {
+                  abrirAnexos(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <button type="button" className="icon-btn attach-btn" onClick={() => arquivoRef.current?.click()} title="Anexar arquivo (ou arraste para a conversa / cole um print com Ctrl+V)" aria-label="Anexar arquivo">
+                <Icon name="paperclip" size={20} />
+              </button>
               <textarea
                 ref={textoRef}
                 placeholder="Escreva uma mensagem…  ( / para respostas rápidas · Shift+Enter quebra linha )"
                 value={texto}
                 onChange={(e) => setTexto(e.target.value)}
                 onKeyDown={onKeyDown}
+                onPaste={onPaste}
                 rows={1}
                 aria-label="Mensagem"
               />
-              <button className="primary" disabled={!texto.trim() || enviando} title="Enviar (Enter)" aria-label="Enviar">
-                <Icon name="send" size={17} />
-              </button>
+              {texto.trim() ? (
+                <button className="primary" disabled={enviando} title="Enviar (Enter)" aria-label="Enviar">
+                  <Icon name="send" size={17} />
+                </button>
+              ) : (
+                <button type="button" className="primary" onClick={iniciarGravacao} disabled={enviandoAudio} title="Gravar mensagem de voz" aria-label="Gravar áudio">
+                  <Icon name="mic" size={18} />
+                </button>
+              )}
             </form>
+            )}
           </>
         )}
       </section>
+
+      {anexos.length > 0 && (
+        <AnexoModal
+          arquivos={anexos}
+          destino={contato?.internalName || contato?.name}
+          legendaInicial={texto}
+          onClose={() => setAnexos([])}
+          onEnviar={async (legenda) => {
+            await enviarAnexos(legenda);
+            if (legenda && legenda === texto.trim()) setTexto("");
+          }}
+        />
+      )}
+
+      {imagemAberta && (
+        <Modal titulo={imagemAberta.data?.file?.name || "Imagem"} onClose={() => setImagemAberta(null)} largura="min(92vw, 1100px)">
+          <div className="lightbox">
+            <img src={imagemAberta.fileUrl} alt={imagemAberta.data?.file?.name || ""} />
+          </div>
+          <div className="modal-actions">
+            <a className="btn-link" href={imagemAberta.downloadUrl || imagemAberta.fileUrl} target="_blank" rel="noreferrer">
+              <Icon name="download" size={16} /> Baixar
+            </a>
+          </div>
+        </Modal>
+      )}
 
       {modal === "transferir" && (
         <TransferirModal
@@ -417,6 +752,65 @@ export default function Atendimento() {
         />
       )}
     </div>
+  );
+}
+
+function AnexoModal({ arquivos, destino, legendaInicial, onClose, onEnviar }) {
+  const [legenda, setLegenda] = useState((legendaInicial || "").trim());
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+  const previews = useMemo(
+    () => arquivos.map((f) => (f.type.startsWith("image/") ? URL.createObjectURL(f) : null)),
+    [arquivos]
+  );
+  useEffect(() => () => previews.forEach((u) => u && URL.revokeObjectURL(u)), [previews]);
+
+  const enviar = async () => {
+    setErro("");
+    setEnviando(true);
+    try {
+      await onEnviar(legenda.trim());
+    } catch (e) {
+      setErro(e.message);
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <Modal titulo={`Enviar ${arquivos.length > 1 ? `${arquivos.length} arquivos` : "arquivo"} para ${destino || "o contato"}`} onClose={enviando ? () => {} : onClose} largura="560px">
+      <div className="anexos">
+        {arquivos.map((f, i) => (
+          <div key={i} className="anexo">
+            {previews[i] ? <img src={previews[i]} alt={f.name} /> : <span className="media-doc-icon"><Icon name="file" size={22} /></span>}
+            <div className="grow">
+              <strong className="ellipsis" style={{ display: "block" }}>{f.name || "print.png"}</strong>
+              <small className="muted">{fmtBytes(f.size)}</small>
+            </div>
+          </div>
+        ))}
+      </div>
+      <label>
+        Legenda (opcional{arquivos.length > 1 ? ", vai no primeiro arquivo" : ""})
+        <textarea
+          rows={2}
+          value={legenda}
+          onChange={(e) => setLegenda(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (!enviando) enviar();
+            }
+          }}
+        />
+      </label>
+      {erro && <div className="error">{erro}</div>}
+      <div className="modal-actions">
+        <button onClick={onClose} disabled={enviando}>Cancelar</button>
+        <button className="primary" onClick={enviar} disabled={enviando}>
+          <Icon name="send" size={16} />{enviando ? "Enviando…" : "Enviar"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

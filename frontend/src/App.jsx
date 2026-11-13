@@ -5,7 +5,8 @@ import { closeSocket, getSocket } from "./socket";
 import Icon from "./components/Icon";
 import Avatar from "./components/Avatar";
 import BrandMark from "./components/BrandMark";
-import { ToastProvider } from "./components/Toast";
+import { ToastProvider, useToast } from "./components/Toast";
+import { useAvisos } from "./avisos";
 import Login from "./pages/Login";
 import Atendimento from "./pages/Atendimento";
 import Contatos from "./pages/Contatos";
@@ -66,6 +67,17 @@ function Layout() {
   const [erro, setErro] = useState("");
   const navigate = useNavigate();
   const online = useSocketOnline();
+  const toast = useToast();
+  const avisos = useAvisos(me);
+
+  const alternarNotificacao = async () => {
+    const r = await avisos.alternarNotificacao();
+    if (r === "on") toast.show("Notificações ligadas: você é avisado mesmo com o InteliSac minimizado");
+    else if (r === "off") toast.show("Notificações desligadas");
+    else if (r === "denied")
+      toast.show("O navegador está bloqueando as notificações. Clique no cadeado ao lado do endereço e permita Notificações.", "error");
+    else if (r === "unsupported") toast.show("Este navegador não mostra notificações", "error");
+  };
 
   useEffect(() => {
     api("/me")
@@ -118,7 +130,33 @@ function Layout() {
               )
             )}
           </nav>
-          <div className="me">
+          <div className="me-avisos">
+            <button
+              type="button"
+              className={avisos.som ? "on" : ""}
+              onClick={avisos.alternarSom}
+              aria-pressed={avisos.som}
+              title={avisos.som ? "Som de mensagem nova ligado (clique para desligar)" : "Som de mensagem nova desligado (clique para ligar)"}
+            >
+              <Icon name={avisos.som ? "volume" : "volumeOff"} size={16} /><span>Som</span>
+            </button>
+            <button
+              type="button"
+              className={avisos.notificacoes ? "on" : ""}
+              onClick={alternarNotificacao}
+              aria-pressed={avisos.notificacoes}
+              title={
+                avisos.permissao === "denied"
+                  ? "Notificações bloqueadas no navegador"
+                  : avisos.notificacoes
+                    ? "Notificação na tela ligada (clique para desligar)"
+                    : "Notificação na tela desligada (clique para ligar)"
+              }
+            >
+              <Icon name={avisos.notificacoes ? "bell" : "bellOff"} size={16} /><span>Avisos</span>
+            </button>
+          </div>
+          <div className="me-box">
             <Avatar nome={me.name} size={34} />
             <div className="me-info">
               <strong className="ellipsis" title={me.email}>{me.name}</strong>
@@ -135,6 +173,14 @@ function Layout() {
         <main className="content">
           {!online && (
             <div className="conn-banner"><Icon name="wifiOff" size={16} /> Sem conexão em tempo real com o servidor. Tentando reconectar…</div>
+          )}
+          {avisos.mostrarConvite && (
+            <div className="notif-banner">
+              <Icon name="bell" size={16} />
+              <span className="grow">Quer ser avisado quando chegar mensagem, mesmo com o InteliSac minimizado?</span>
+              <button className="primary small-btn" onClick={alternarNotificacao}>Ativar notificações</button>
+              <button className="small-btn" onClick={avisos.dispensarConvite}>Agora não</button>
+            </div>
           )}
           <Routes>
             <Route path="/" element={<Atendimento />} />

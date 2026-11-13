@@ -87,6 +87,18 @@ aparelho*. Todos os atendentes usam essa mesma conexão. Detalhes e cuidados em
 
 Para testar sem WhatsApp, use o menu **Simulador**: você digita como se fosse o cliente.
 
+No dia a dia:
+
+- **✓ / ✓✓ / ✓✓ azul** em cada mensagem enviada (enviada, entregue, lida ou áudio ouvido), vindos do
+  WhatsApp pelo evento `ack` do gateway. Só avançam: um aviso atrasado não volta de "lida" para "entregue".
+- **Aviso de mensagem nova**: som e notificação do Windows/navegador (botões *Som* e *Avisos* no rodapé
+  do menu; a escolha fica no navegador de cada atendente). Avisa só o chamado do atendente ou a fila dos
+  departamentos dele (administrador: toda a fila). Clicar na notificação abre a conversa. Com a aba em
+  segundo plano, o título mostra quantas chegaram, ex. `(3) InteliSac`.
+- **Grupos**: viram uma conversa com o nome do grupo; cada mensagem mostra quem do grupo escreveu.
+- **Foto do contato**: baixada do WhatsApp em segundo plano e guardada no Storage
+  (`<conta>/avatars/<contato>.jpg`); atualiza a cada 7 dias.
+
 ## API (compatível com o formato do Digisac)
 
 Base `http://localhost:8010/api/v1` — documentação interativa em `http://localhost:8010/docs`.
@@ -106,8 +118,8 @@ Base `http://localhost:8010/api/v1` — documentação interativa em `http://loc
 | POST | `/channels/{serviceId}/webhook` | Entrada de mensagens de outros canais (header `X-Channel-Token`) |
 
 Eventos socket.io (`/socket.io`, `?access_token=`): `message.created`, `ticket.created`,
-`ticket.updated`, `contact.created/updated/destroyed`, `service.updated` (status/QR do WhatsApp)…
+`ticket.updated`, `message.updated` (✓✓, apagada), `contact.created/updated/destroyed`, `service.updated` (status/QR do WhatsApp)…
 
 ## Próximos passos
 
-Ligar o banco no Supabase (ver `docs/04`), depois mídia (fotos, áudios, PDFs) com Supabase Storage.
+Levar as rotinas fiscais (NF-e, NFS, cobrança) do Digisac para a API do InteliSac.

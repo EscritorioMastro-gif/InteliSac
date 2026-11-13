@@ -267,6 +267,9 @@ class Contact(Base):
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[int] = mapped_column(Integer, default=0)
     current_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Foto do perfil do WhatsApp guardada no Storage; atualizada de tempos em tempos
+    avatar_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    avatar_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -283,6 +286,7 @@ class Contact(Base):
             "data": {"number": self.number, "email": self.email, "jid": self.jid},
             "note": self.note,
             "isGroup": self.is_group,
+            "hasAvatar": bool(self.avatar_path),
             "blocked": self.blocked,
             "unread": self.unread,
             "currentTicketId": self.current_ticket_id,

@@ -14,5 +14,5 @@ from .base import ChannelAdapter, SendResult
 class WhatsAppCloudAdapter(ChannelAdapter):
     type = "whatsapp-business"
 
-    async def send_text(self, service, contact, text: str) -> SendResult:
+    async def send_text(self, service, contact, text: str, quoted=None) -> SendResult:
         return SendResult(ok=False, error="Canal WhatsApp Cloud ainda não implementado (Fase 1)")

@@ -72,6 +72,21 @@ export async function api(path, { method = "GET", body, params } = {}, retry = t
   return data;
 }
 
+// Envio de arquivo (multipart). Mesmo esquema de token/renovação do api().
+export async function apiForm(path, formData, retry = true) {
+  const headers = {};
+  const t = getTokens();
+  if (t?.access_token) headers.Authorization = `Bearer ${t.access_token}`;
+  const res = await fetch(BASE + path, { method: "POST", headers, body: formData });
+  if (res.status === 401 && retry && t?.refresh_token) {
+    await refresh();
+    return apiForm(path, formData, false);
+  }
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.detail?.message || `Erro ${res.status}`);
+  return data;
+}
+
 // Mesmo formato da fábrica genérica do Digisac: resource("/departments").fetchMany() etc.
 export function resource(path) {
   return {
