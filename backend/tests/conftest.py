@@ -13,6 +13,7 @@ os.environ["WHATSAPP_GATEWAY_URL"] = "http://127.0.0.1:9"  # porta fechada: simu
 os.environ["SUPABASE_URL"] = ""
 os.environ["SUPABASE_ANON_KEY"] = ""
 os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
+os.environ["ANTHROPIC_API_KEY"] = ""  # o corretor nunca chama o Claude de verdade nos testes
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

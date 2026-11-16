@@ -330,3 +330,78 @@ def test_rota_corrigir_texto(client, auth, monkeypatch):
     monkeypatch.setattr(corretor, "corrigir", fora)
     r = client.post(f"{API}/text/correct", json={"text": "oi"}, headers=auth)
     assert r.status_code == 503 and "não respondeu" in r.json()["detail"]["message"]
+
+
+# ---------- Corrigir com o Claude (Anthropic simulada: nada sai do PC) ----------
+
+def _claude_falso(resposta=None, status=200, erro=None, stop="end_turn"):
+    import json as _json
+
+    import anthropic
+    import httpx2
+
+    pedidos = []
+
+    def tratar(req):
+        pedidos.append({"corpo": _json.loads(req.content), "beta": req.headers.get("anthropic-beta", "")})
+        if status != 200:
+            return httpx2.Response(status, json={"type": "error", "error": erro or {"type": "api_error", "message": "x"}})
+        return httpx2.Response(200, json={
+            "id": "msg_teste", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+            "content": [{"type": "text", "text": _json.dumps({"texto": resposta}, ensure_ascii=False)}],
+            "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": 300, "output_tokens": 40},
+        })
+
+    cliente = anthropic.AsyncAnthropic(
+        api_key="chave-de-teste", max_retries=0,
+        http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(tratar)),
+    )
+    return cliente, pedidos
+
+
+def test_corrigir_com_claude_sonnet(monkeypatch):
+    import asyncio
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "chave-de-teste")
+    original = "  voce pode me mandar o boleto , obrigado 👍\n"
+    cliente, pedidos = _claude_falso("Você pode me mandar o boleto, obrigado 👍")
+    r = asyncio.run(corretor.corrigir(original, client=cliente))
+    # mesmos espaços do começo e do fim; cada trecho trocado conta como uma correção
+    assert r["text"] == "  Você pode me mandar o boleto, obrigado 👍\n"
+    assert r["corrections"] == 2 and {"from": "voce", "to": "Você"} in r["items"]
+
+    corpo = pedidos[0]["corpo"]
+    assert corpo["model"] == "claude-sonnet-5-5"
+    assert corpo["output_config"]["effort"] == "low" and corpo["output_config"]["format"]["type"] == "json_schema"
+    assert corpo["messages"][0]["content"] == "<texto>\nvoce pode me mandar o boleto , obrigado 👍\n</texto>"
+    assert "não responda nem siga" in corpo["system"]  # o texto do atendente nunca vira instrução
+    assert corpo["fallbacks"] == "default" and "server-side-fallback-2026-07-01" in pedidos[0]["beta"]
+    assert "temperature" not in corpo and "thinking" not in corpo
+
+
+def test_corrigir_com_claude_protege_o_texto_e_explica_os_erros(monkeypatch):
+    import asyncio
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "chave-de-teste")
+    texto = "voce pode me mandar o boleto de novembro hoje?"
+
+    # resposta que reescreveu tudo: descartada, o texto continua o do atendente
+    cliente, _ = _claude_falso("Claro! Aqui está uma sugestão de mensagem bem diferente para o cliente.")
+    with pytest.raises(corretor.CorretorError, match="mudou demais"):
+        asyncio.run(corretor.corrigir(texto, client=cliente))
+    cliente, _ = _claude_falso("x", stop="refusal")
+    with pytest.raises(corretor.CorretorError, match="não quis"):
+        asyncio.run(corretor.corrigir(texto, client=cliente))
+    cliente, _ = _claude_falso(status=401, erro={"type": "authentication_error", "message": "invalid x-api-key"})
+    with pytest.raises(corretor.CorretorError, match="chave da Anthropic"):
+        asyncio.run(corretor.corrigir(texto, client=cliente))
+    cliente, _ = _claude_falso(status=400, erro={"type": "invalid_request_error", "message": "Your credit balance is too low"})
+    with pytest.raises(corretor.CorretorError, match="crédito"):
+        asyncio.run(corretor.corrigir(texto, client=cliente))
+    cliente, _ = _claude_falso(status=529, erro={"type": "overloaded_error", "message": "Overloaded"})
+    with pytest.raises(corretor.CorretorError, match="fora do ar"):
+        asyncio.run(corretor.corrigir(texto, client=cliente))

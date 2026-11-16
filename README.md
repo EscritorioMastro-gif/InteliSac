@@ -137,6 +137,8 @@ Banco, arquivos e login continuam no Supabase.
 2. O Render pede 4 valores — copie do `backend/.env` do PC (mesmos nomes):
    `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
    Os segredos `JWT_SECRET` e `GATEWAY_SECRET` o Render gera sozinho.
+   Opcional: `ANTHROPIC_API_KEY` (Environment do serviço `intelisac`) liga o botão **Corrigir** com o
+   Claude Sonnet 5.5 (pago por uso; modelo trocável em `CORRETOR_MODELO`). Sem ela o botão usa o LanguageTool grátis.
 3. **Apply**. O primeiro build leva alguns minutos. As migrações do banco rodam quando a API liga.
 4. Troca do WhatsApp do PC para o Render (o WhatsApp só pode rodar num lugar):
    1. no InteliSac do **PC**: Conexões → **Desconectar** (tira o aparelho do PC do celular);

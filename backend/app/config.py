@@ -53,7 +53,9 @@ class Settings:
     # Gateway do WhatsApp por QR code (pasta whatsapp-gateway/)
     whatsapp_gateway_url: str = _com_http(os.getenv("WHATSAPP_GATEWAY_URL") or "http://127.0.0.1:8020")
     gateway_secret: str = os.getenv("GATEWAY_SECRET", "")
-    # Botão "Corrigir meu texto" (LanguageTool grátis; dá para trocar por um servidor próprio)
+    # Botão "Corrigir meu texto": com a chave da Anthropic usa o Claude; sem ela, o LanguageTool grátis
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    corretor_modelo: str = os.getenv("CORRETOR_MODELO", "").strip() or "claude-sonnet-5-5"
     languagetool_url: str = os.getenv("LANGUAGETOOL_URL", "").strip() or "https://api.languagetool.org/v2/check"
     # Supabase Auth: quando configurado, e-mail e senha dos usuários ficam no Supabase.
     supabase_url: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
