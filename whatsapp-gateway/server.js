@@ -15,6 +15,7 @@ import path from "node:path";
 import * as baileys from "@whiskeysockets/baileys";
 import pino from "pino";
 import QRCode from "qrcode";
+import { contatoDoVcard } from "./vcard.js";
 
 const makeWASocket = baileys.makeWASocket ?? baileys.default?.default ?? baileys.default;
 const {
@@ -154,6 +155,13 @@ const ACK = { 0: "error", 1: "pending", 2: "sent", 3: "delivered", 4: "read", 5:
 
 function onStatus(s, updates) {
   for (const { key, update } of updates || []) {
+    // Mensagem editada (pelo cliente, pelo celular ou por outro aparelho): manda o texto novo
+    const editada = update?.message?.editedMessage?.message;
+    if (key?.id && editada) {
+      const texto = textoDe(normalizeMessageContent(editada));
+      if (texto) postEvent({ type: "edit", serviceId: s.id, messageId: key.id, text: texto, fromMe: !!key.fromMe });
+      continue;
+    }
     if (!key?.id || !key.fromMe || update?.status === undefined || update?.status === null) continue;
     const ack = ACK[update.status];
     if (ack) postEvent({ type: "ack", serviceId: s.id, messageId: key.id, ack });
@@ -269,6 +277,15 @@ function midia(type, node, label, fileName) {
   };
 }
 
+// Texto de uma mensagem (ou a legenda do arquivo)
+function textoDe(c) {
+  if (!c) return null;
+  return (
+    c.conversation || c.extendedTextMessage?.text || c.imageMessage?.caption || c.videoMessage?.caption ||
+    c.documentMessage?.caption || null
+  );
+}
+
 function parseContent(ctype, c) {
   switch (ctype) {
     case "conversation":
@@ -291,9 +308,15 @@ function parseContent(ctype, c) {
       return { type: "location", text: `[Localização] https://maps.google.com/?q=${l.degreesLatitude},${l.degreesLongitude}` };
     }
     case "contactMessage":
-      return { type: "vcard", text: `[Contato] ${c.contactMessage?.displayName || ""}`.trim() };
-    case "contactsArrayMessage":
-      return { type: "vcard", text: `[Contatos] ${(c.contactsArrayMessage?.contacts || []).map((x) => x.displayName).join(", ")}` };
+      return {
+        type: "vcard",
+        text: `[Contato] ${c.contactMessage?.displayName || ""}`.trim(),
+        contacts: [contatoDoVcard(c.contactMessage)],
+      };
+    case "contactsArrayMessage": {
+      const lista = c.contactsArrayMessage?.contacts || [];
+      return { type: "vcard", text: `[Contatos] ${lista.map((x) => x.displayName).join(", ")}`, contacts: lista.map(contatoDoVcard) };
+    }
     case "buttonsResponseMessage":
       return { type: "chat", text: c.buttonsResponseMessage?.selectedDisplayText };
     case "listResponseMessage":
@@ -394,6 +417,7 @@ async function onMessages(s, sock, { messages, type }) {
         media,
         quotedId: ctx?.stanzaId || null,
         quotedText: quotedText || null,
+        contacts: parsed.contacts || null,
         timestamp: secs,
       },
     });
@@ -420,6 +444,9 @@ function citada(to, quoted) {
   };
 }
 
+// Mensagem encaminhada: o WhatsApp mostra "Encaminhada" em cima
+const ENCAMINHADA = { isForwarded: true, forwardingScore: 1 };
+
 // Opções de envio: id gerado antes (o "eco" não volta como mensagem nova) + citação
 function opcoesEnvio(s, to, quoted) {
   const messageId = generateMessageIDV2 ? generateMessageIDV2(s.sock.user?.id) : undefined;
@@ -428,13 +455,23 @@ function opcoesEnvio(s, to, quoted) {
   return { ...(messageId ? { messageId } : {}), ...(q ? { quoted: q } : {}) };
 }
 
-async function sendText(s, { jid, number, text, quoted }) {
+async function sendText(s, { jid, number, text, quoted, forwarded }) {
   if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
   if (!text || !String(text).trim()) throw httpError(422, "Mensagem vazia");
   const to = await destino(s, { jid, number });
-  const sent = await s.sock.sendMessage(to, { text: String(text) }, opcoesEnvio(s, to, quoted));
+  const content = { text: String(text), ...(forwarded ? { contextInfo: ENCAMINHADA } : {}) };
+  const sent = await s.sock.sendMessage(to, content, opcoesEnvio(s, to, quoted));
   rememberSent(s, sent.key.id);
   return { id: sent.key.id, jid: to };
+}
+
+// Editar uma mensagem de texto enviada por este número (o WhatsApp aceita até 15 min depois)
+async function editar(s, { jid, id, text }) {
+  if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
+  if (!jid || !id || !text || !String(text).trim()) throw httpError(422, "Informe jid, id e text");
+  const sent = await s.sock.sendMessage(jid, { text: String(text), edit: { remoteJid: jid, fromMe: true, id } }, opcoesEnvio(s, jid));
+  rememberSent(s, sent.key.id);
+  return { ok: true };
 }
 
 // Apagar para todos (só mensagens enviadas por este número)
@@ -456,7 +493,7 @@ async function destino(s, { jid, number }) {
 }
 
 // Envia arquivo. O backend manda um link temporário (Supabase Storage); o WhatsApp baixa daí.
-async function sendMedia(s, { jid, number, url, mimetype, fileName, kind, caption, ptt, quoted, seconds, waveform }) {
+async function sendMedia(s, { jid, number, url, mimetype, fileName, kind, caption, ptt, quoted, seconds, waveform, forwarded }) {
   if (!s?.sock || s.status !== "connected") throw httpError(409, "WhatsApp desconectado");
   if (!url) throw httpError(422, "Informe url do arquivo");
   const to = await destino(s, { jid, number });
@@ -471,6 +508,7 @@ async function sendMedia(s, { jid, number, url, mimetype, fileName, kind, captio
     if (ptt && Array.isArray(waveform) && waveform.length) content.waveform = Uint8Array.from(waveform);
   }
   else content = { document: { url }, mimetype: mimetype || "application/octet-stream", fileName: fileName || "arquivo", caption: legenda };
+  if (forwarded) content.contextInfo = ENCAMINHADA;
   // Áudio não tem legenda no WhatsApp: a legenda/assinatura ("*Gabriel:*") vai como texto logo ANTES
   if (kind === "audio" && legenda) {
     const t = await s.sock.sendMessage(to, { text: legenda }, opcoesEnvio(s, to));
@@ -563,6 +601,7 @@ const server = createServer(async (req, res) => {
     if (action === "send") return reply(200, await sendText(s, body));
     if (action === "send-media") return reply(200, await sendMedia(s, body));
     if (action === "delete") return reply(200, await revoke(s, body));
+    if (action === "edit") return reply(200, await editar(s, body));
     return reply(404, { message: "Ação desconhecida" });
   } catch (e) {
     if (!e.status) log("erro na requisição", e);

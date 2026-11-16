@@ -1,4 +1,5 @@
 import mimetypes
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
@@ -286,15 +287,179 @@ async def delete_message(message_id: str, db: Session = Depends(get_db), user: U
     return final
 
 
-def refresh_preview(db: Session, contact: Contact, msg: Message) -> bool:
-    """Se a mensagem apagada era a última da conversa, a prévia da lista vira "[Mensagem apagada]"."""
+def _e_a_ultima(db: Session, contact: Contact, msg: Message) -> bool:
     ultima = (
-        db.query(Message)
+        db.query(Message.id)
         .filter(Message.contact_id == contact.id, Message.type != "ticket")
         .order_by(Message.created_at.desc())
         .first()
     )
-    if ultima and ultima.id == msg.id:
+    return bool(ultima and ultima.id == msg.id)
+
+
+def refresh_preview(db: Session, contact: Contact, msg: Message) -> bool:
+    """Se a mensagem apagada era a última da conversa, a prévia da lista vira "[Mensagem apagada]"."""
+    if _e_a_ultima(db, contact, msg):
         contact.last_message = "[Mensagem apagada]"
         return True
     return False
+
+
+# ---------- editar ----------
+
+# O WhatsApp só deixa editar até 15 minutos depois do envio
+EDIT_LIMIT = timedelta(minutes=15)
+_ASSINATURA = re.compile(r"^\*[^*\n]{1,80}:\*\n")
+
+
+def tirar_assinatura(texto: str) -> str:
+    """Texto que o cliente recebeu ("*Nome:*\\ntexto") sem a assinatura, como fica guardado aqui."""
+    return _ASSINATURA.sub("", texto or "", count=1)
+
+
+def aplicar_edicao(db: Session, contact: Contact, msg: Message, texto: str, por: str) -> bool:
+    """Troca o texto da mensagem guardando o anterior (a equipe vê o que era antes).
+    `por`: id do colaborador, "contact" (o cliente editou) ou "device" (celular/outro aparelho).
+    Devolve True se a prévia da lista de conversas mudou."""
+    data = dict(msg.data or {})
+    historico = list(data.get("editHistory") or [])
+    historico.append({"text": msg.text or "", "until": iso(now())})
+    data.update(edited=True, editedAt=iso(now()), editedBy=por, editHistory=historico[-10:])
+    msg.text = texto
+    msg.data = data
+    if _e_a_ultima(db, contact, msg):
+        contact.last_message = texto
+        return True
+    return False
+
+
+@router.put("/{message_id}")
+async def edit_message(message_id: str, body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Edita uma mensagem de texto enviada pelo InteliSac. Só quem enviou pode editar (a assinatura
+    leva o nome dele) e só até 15 minutos depois do envio (limite do WhatsApp)."""
+    texto = (body.get("text") or "").strip()
+    if not texto:
+        raise HTTPException(422, detail={"message": "Mensagem vazia"})
+    msg = db.query(Message).filter(Message.account_id == user.account_id, Message.id == message_id).first()
+    if not msg or msg.type == "ticket":
+        raise HTTPException(404, detail={"message": "Mensagem não encontrada"})
+    data = msg.data or {}
+    if not msg.is_from_me or msg.type != "chat":
+        raise HTTPException(422, detail={"message": "Só dá para editar mensagens de texto enviadas por nós"})
+    if data.get("deleted"):
+        raise HTTPException(422, detail={"message": "Mensagem apagada não pode ser editada"})
+    if data.get("forwarded"):
+        raise HTTPException(422, detail={"message": "Mensagem encaminhada não pode ser editada"})
+    if data.get("error") or not msg.external_id:
+        raise HTTPException(422, detail={"message": "Essa mensagem não chegou a ser enviada"})
+    if msg.user_id != user.id:
+        raise HTTPException(403, detail={"message": "Só quem enviou a mensagem pode editar"})
+    enviada = msg.created_at if msg.created_at.tzinfo else msg.created_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - enviada > EDIT_LIMIT:
+        raise HTTPException(422, detail={"message": "O WhatsApp só permite editar até 15 minutos depois do envio"})
+    if texto == (msg.text or ""):
+        return storage.attach_urls([msg.to_dict()])[0]
+
+    contact = db.get(Contact, msg.contact_id)
+    service = db.get(Service, msg.service_id)
+    enviado = sign(texto, user.name) if data.get("signed") else texto
+    result = await get_adapter(service.type).edit(service, contact, msg.external_id, enviado)
+    if not result.ok:
+        raise HTTPException(502, detail={"message": result.error or "Não consegui editar no WhatsApp"})
+    contato_mudou = aplicar_edicao(db, contact, msg, texto, por=user.id)
+    db.commit()
+    final = storage.attach_urls([msg.to_dict()])[0]
+    await emit(user.account_id, "message.updated", final)
+    if contato_mudou:
+        await emit(user.account_id, "contact.updated", contact.to_dict())
+    return final
+
+
+# ---------- encaminhar ----------
+
+MAX_ENCAMINHAR = 20  # mensagens por vez
+MAX_DESTINOS = 10
+
+
+def _texto_encaminhado(m: Message) -> str:
+    """Mensagem sem arquivo encaminhada como texto. Contato (vCard) vai com nome e número."""
+    texto = m.text or resumo(m)
+    contatos = (m.data or {}).get("contacts") or []
+    if m.type == "vcard" and contatos:
+        linhas = [f"{c.get('name') or 'Contato'}: {', '.join('+' + n for n in c.get('numbers') or [])}" for c in contatos]
+        texto = "\n".join(linhas)
+    return texto
+
+
+async def _encaminhar_uma(db: Session, user: User, m: Message, contact: Contact, service: Service) -> dict:
+    adapter = get_adapter(service.type)
+    arquivo = (m.data or {}).get("file") or {}
+    data: dict = {"forwarded": True, "forwardedFrom": {"messageId": m.id, "contactId": m.contact_id}}
+    preview = None
+    if arquivo.get("path"):
+        kind = storage.media_kind(arquivo.get("mimetype"))
+        msg_type = m.type if m.type in ("image", "video", "audio", "ptt", "document", "sticker") else kind
+        texto = m.text or ""
+        duracao = arquivo.get("duration")
+        try:
+            link = storage.sign_one(arquivo["path"], expires=900)  # o WhatsApp baixa daqui
+        except storage.StorageError as e:
+            result = SendResult(ok=False, error=str(e))
+        else:
+            result = await adapter.send_media(
+                service,
+                contact,
+                MediaOut(
+                    url=link, mimetype=arquivo.get("mimetype") or "application/octet-stream",
+                    file_name=arquivo.get("name") or "arquivo", kind=kind, caption=texto or None,
+                    ptt=m.type == "ptt", seconds=max(1, round(duracao)) if duracao else None,
+                ),
+                forwarded=True,
+            )
+        data["file"] = dict(arquivo)
+        preview = storage.LABELS.get(msg_type, "[Arquivo]") + (f" {arquivo.get('name') or ''}" if kind == "document" else "")
+    else:
+        msg_type = "chat"
+        texto = _texto_encaminhado(m)
+        result = await adapter.send_text(service, contact, texto, forwarded=True)
+    _guardar_jid(db, contact, result)
+    if result.ok:
+        data["ack"] = "sent"
+    else:
+        data["error"] = result.error
+    msg, events = ticketing.register_message(
+        db, contact, texto, is_from_me=True, user=user, msg_type=msg_type,
+        external_id=result.external_id, data=data, preview=preview,
+    )
+    db.commit()
+    return await _emitir(user, events, msg)
+
+
+@router.post("/forward")
+async def forward_messages(body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Encaminha mensagens (texto, foto, áudio, documento...) para outras conversas, na ordem em
+    que foram enviadas. O WhatsApp mostra "Encaminhada"; não vai assinatura (o conteúdo é de outra conversa)."""
+    ids = list(dict.fromkeys(str(i) for i in (body.get("messageIds") or [])))
+    destinos = list(dict.fromkeys(str(i) for i in (body.get("contactIds") or [])))
+    if not ids or not destinos:
+        raise HTTPException(422, detail={"message": "Escolha as mensagens e para quem encaminhar"})
+    if len(ids) > MAX_ENCAMINHAR or len(destinos) > MAX_DESTINOS:
+        raise HTTPException(422, detail={"message": f"Encaminhe até {MAX_ENCAMINHAR} mensagens para até {MAX_DESTINOS} conversas por vez"})
+    msgs = (
+        db.query(Message)
+        .filter(Message.account_id == user.account_id, Message.id.in_(ids))
+        .order_by(Message.created_at)
+        .all()
+    )
+    if len(msgs) != len(ids):
+        raise HTTPException(404, detail={"message": "Mensagem não encontrada"})
+    for m in msgs:
+        if m.type == "ticket" or (m.data or {}).get("deleted"):
+            raise HTTPException(422, detail={"message": "Mensagem apagada ou aviso do chamado não pode ser encaminhado"})
+    alvos = [_contato_para_envio(db, user, cid) for cid in destinos]  # confere todos antes de enviar
+    enviadas = []
+    for contact, service in alvos:
+        for m in msgs:
+            enviadas.append(await _encaminhar_uma(db, user, m, contact, service))
+    falhas = [e for e in enviadas if (e.get("data") or {}).get("error")]
+    return {"data": enviadas, "sent": len(enviadas) - len(falhas), "failed": len(falhas)}

@@ -317,6 +317,8 @@ class Ticket(Base):
     origin: Mapped[str] = mapped_column(String(20), default="contact")  # contact | automatic | manual
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Quando entrou na fila (aberto sem atendente ou transferido para a fila): ordem da aba Fila
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -335,6 +337,7 @@ class Ticket(Base):
             "comments": self.comments,
             "ticketTopicIds": [t.id for t in self.topics],
             "startedAt": iso(self.started_at),
+            "queuedAt": iso(self.queued_at),
             "endedAt": iso(self.ended_at),
             "lastMessageAt": iso(self.last_message_at),
         }

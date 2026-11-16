@@ -80,6 +80,7 @@ def open_ticket(
     if existing:
         return existing, []
     account = db.get(Account, contact.account_id)
+    inicio = now()
     ticket = Ticket(
         account_id=contact.account_id,
         contact_id=contact.id,
@@ -88,7 +89,8 @@ def open_ticket(
         protocol=_next_protocol(db, account),
         origin=origin,
         is_open=True,
-        started_at=now(),
+        started_at=inicio,
+        queued_at=inicio,
     )
     db.add(ticket)
     db.flush()
@@ -185,6 +187,8 @@ def transfer_ticket(
     )
     db.add(transfer)
     mesmo_departamento = (department_id or ticket.department_id) == ticket.department_id
+    if user_id is None and (ticket.user_id is not None or not mesmo_departamento):
+        ticket.queued_at = now()  # entrou (de novo) numa fila: conta a espera a partir de agora
     ticket.department_id = department_id or ticket.department_id
     ticket.user_id = user_id
     dep = db.get(Department, ticket.department_id) if ticket.department_id else None

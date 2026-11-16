@@ -53,6 +53,8 @@ class Settings:
     # Gateway do WhatsApp por QR code (pasta whatsapp-gateway/)
     whatsapp_gateway_url: str = _com_http(os.getenv("WHATSAPP_GATEWAY_URL") or "http://127.0.0.1:8020")
     gateway_secret: str = os.getenv("GATEWAY_SECRET", "")
+    # Botão "Corrigir meu texto" (LanguageTool grátis; dá para trocar por um servidor próprio)
+    languagetool_url: str = os.getenv("LANGUAGETOOL_URL", "").strip() or "https://api.languagetool.org/v2/check"
     # Supabase Auth: quando configurado, e-mail e senha dos usuários ficam no Supabase.
     supabase_url: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
     supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY", "").strip()

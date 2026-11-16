@@ -31,16 +31,18 @@ class WhatsAppQrAdapter(ChannelAdapter):
             return SendResult(ok=False, error=str(e))
         return SendResult(ok=True, external_id=res.get("id"), extra={"jid": res.get("jid")})
 
-    async def send_text(self, service, contact, text: str, quoted: Quoted | None = None) -> SendResult:
+    async def send_text(self, service, contact, text: str, quoted: Quoted | None = None, forwarded: bool = False) -> SendResult:
         dest = _destino(contact)
         if not dest:
             return SendResult(ok=False, error="Contato sem número de WhatsApp")
         payload = {"text": text, **dest}
         if quoted:
             payload["quoted"] = _quoted(quoted)
+        if forwarded:
+            payload["forwarded"] = True
         return await self._post(service, "send", payload)
 
-    async def send_media(self, service, contact, media: MediaOut, quoted: Quoted | None = None) -> SendResult:
+    async def send_media(self, service, contact, media: MediaOut, quoted: Quoted | None = None, forwarded: bool = False) -> SendResult:
         dest = _destino(contact)
         if not dest:
             return SendResult(ok=False, error="Contato sem número de WhatsApp")
@@ -59,10 +61,18 @@ class WhatsAppQrAdapter(ChannelAdapter):
             payload["waveform"] = media.waveform
         if quoted:
             payload["quoted"] = _quoted(quoted)
+        if forwarded:
+            payload["forwarded"] = True
         return await self._post(service, "send-media", payload, timeout=180)
 
     async def revoke(self, service, contact, external_id: str) -> SendResult:
         if not contact.jid:
             return SendResult(ok=False, error="Contato sem identificador do WhatsApp")
         res = await self._post(service, "delete", {"jid": contact.jid, "id": external_id})
+        return SendResult(ok=res.ok, error=res.error)
+
+    async def edit(self, service, contact, external_id: str, text: str) -> SendResult:
+        if not contact.jid:
+            return SendResult(ok=False, error="Contato sem identificador do WhatsApp")
+        res = await self._post(service, "edit", {"jid": contact.jid, "id": external_id, "text": text})
         return SendResult(ok=res.ok, error=res.error)

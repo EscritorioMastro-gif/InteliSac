@@ -15,8 +15,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import avatars, storage, ticketing
+from .messages import aplicar_edicao as messages_aplicar_edicao
 from .messages import refresh_preview as messages_refresh_preview
 from .messages import resumo as messages_resumo
+from .messages import tirar_assinatura as messages_tirar_assinatura
 from ..channels.gateway_client import GatewayError, gateway_request
 from ..config import settings
 from ..db import get_db
@@ -47,6 +49,23 @@ def _apply_status(service: Service, ev: dict) -> None:
 
 
 ACK_RANK = {"error": 0, "pending": 1, "sent": 2, "delivered": 3, "read": 4, "played": 5}
+
+
+def _contatos_do_vcard(lista) -> list[dict]:
+    """Contatos que o cliente mandou (vCard): nome + números (só dígitos), no máximo 20."""
+    out = []
+    for c in (lista if isinstance(lista, list) else [])[:20]:
+        if not isinstance(c, dict):
+            continue
+        numeros = []
+        for n in (c.get("numbers") or [])[:5]:
+            d = "".join(ch for ch in str(n) if ch.isdigit())
+            if 8 <= len(d) <= 15 and d not in numeros:
+                numeros.append(d)
+        nome = str(c.get("name") or "").strip()[:200]
+        if numeros or nome:
+            out.append({"name": nome or None, "numbers": numeros})
+    return out
 
 
 @router.post("/gateway/events")
@@ -110,6 +129,28 @@ async def gateway_events(
             await emit(service.account_id, "contact.updated", contact.to_dict())
         return {"ok": True}
 
+    if ev.get("type") == "edit":
+        # Mensagem editada no WhatsApp (pelo cliente, ou pelo celular/outro aparelho)
+        msg = (
+            db.query(Message)
+            .filter(Message.service_id == service.id, Message.external_id == (ev.get("messageId") or ""))
+            .first()
+        )
+        texto = (ev.get("text") or "").strip()
+        if not msg or not texto or msg.type == "ticket" or (msg.data or {}).get("deleted"):
+            return {"ok": True, "ignored": "mensagem não encontrada"}
+        if msg.is_from_me and (msg.data or {}).get("signed"):
+            texto = messages_tirar_assinatura(texto)
+        if texto == (msg.text or ""):
+            return {"ok": True, "ignored": "sem mudança"}  # ex.: a edição feita pelo próprio InteliSac
+        contact = db.get(Contact, msg.contact_id)
+        contato_mudou = messages_aplicar_edicao(db, contact, msg, texto, por="device" if ev.get("fromMe") else "contact")
+        db.commit()
+        await emit(service.account_id, "message.updated", storage.attach_urls([msg.to_dict()])[0])
+        if contato_mudou:
+            await emit(service.account_id, "contact.updated", contact.to_dict())
+        return {"ok": True}
+
     if ev.get("type") == "message":
         m = ev.get("message") or {}
         ext_id = m.get("id")
@@ -138,6 +179,9 @@ async def gateway_events(
         if grupo and m.get("sender"):
             s = m["sender"]
             data["sender"] = {"jid": s.get("jid"), "number": s.get("number"), "name": s.get("name")}
+        contatos = _contatos_do_vcard(m.get("contacts"))
+        if contatos:
+            data["contacts"] = contatos  # contato enviado (vCard): a tela oferece "Conversar"
 
         texto = m.get("text") or ""
         media = m.get("media") or None

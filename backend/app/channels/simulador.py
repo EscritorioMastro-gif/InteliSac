@@ -9,11 +9,14 @@ class SimuladorAdapter(ChannelAdapter):
 
     type = "simulador"
 
-    async def send_text(self, service, contact, text: str, quoted: Quoted | None = None) -> SendResult:
+    async def send_text(self, service, contact, text: str, quoted: Quoted | None = None, forwarded: bool = False) -> SendResult:
         return SendResult(ok=True, external_id=f"sim-{uuid.uuid4().hex[:12]}")
 
-    async def send_media(self, service, contact, media: MediaOut, quoted: Quoted | None = None) -> SendResult:
+    async def send_media(self, service, contact, media: MediaOut, quoted: Quoted | None = None, forwarded: bool = False) -> SendResult:
         return SendResult(ok=True, external_id=f"sim-{uuid.uuid4().hex[:12]}")
 
     async def revoke(self, service, contact, external_id: str) -> SendResult:
+        return SendResult(ok=True)
+
+    async def edit(self, service, contact, external_id: str, text: str) -> SendResult:
         return SendResult(ok=True)

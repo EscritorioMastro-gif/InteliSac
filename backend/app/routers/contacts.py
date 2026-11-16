@@ -1,13 +1,15 @@
 """Contatos + ações do chamado atual do contato (mesmos caminhos do Digisac)."""
 
+import re
+
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .. import avatars, ticketing
 from ..db import get_db
 from ..deps import current_user, paginate
-from ..models import Contact, Department, Service, Tag, Ticket, User
+from ..models import Contact, Department, Service, Tag, Ticket, User, iso
 from ..realtime import emit
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -66,10 +68,28 @@ def list_contacts(
             query = _visible_ticket_filter(query.filter(Ticket.user_id.is_(None)), user)
         else:
             query = _visible_ticket_filter(query, user)
-    query = query.order_by(Contact.last_message_at.is_(None), Contact.last_message_at.desc(), Contact.name)
+    if filter == "queue":
+        # Fila: quem entrou há mais tempo primeiro (mandar outra mensagem não tira o lugar)
+        entrada = func.coalesce(Ticket.queued_at, Ticket.started_at)
+        query = query.order_by(entrada.asc(), Contact.name)
+    else:
+        query = query.order_by(Contact.last_message_at.is_(None), Contact.last_message_at.desc(), Contact.name)
     page_data = paginate(query, page, perPage)
+    if filter == "queue":
+        _entrada_na_fila(db, page_data["data"])
     _fotos(db, page_data["data"], background)
     return page_data
+
+
+def _entrada_na_fila(db: Session, contatos: list[dict]) -> None:
+    """Põe em cada contato da Fila a hora em que ele entrou na fila (a tela mostra há quanto tempo espera)."""
+    ids = [c["currentTicketId"] for c in contatos if c.get("currentTicketId")]
+    if not ids:
+        return
+    linhas = db.query(Ticket.id, Ticket.queued_at, Ticket.started_at).filter(Ticket.id.in_(ids)).all()
+    quando = {r.id: iso(r.queued_at or r.started_at) for r in linhas}
+    for c in contatos:
+        c["queuedAt"] = quando.get(c.get("currentTicketId"))
 
 
 def _fotos(db: Session, contatos: list[dict], background: BackgroundTasks | None) -> None:
@@ -134,6 +154,42 @@ async def create_contact(body: dict = Body(...), db: Session = Depends(get_db), 
     db.commit()
     await emit(user.account_id, "contact.created", contact.to_dict())
     return contact.to_dict()
+
+
+def _so_digitos(numero) -> str:
+    d = re.sub(r"\D", "", str(numero or ""))
+    # Número brasileiro sem o 55 (ex.: "(16) 99145-2133" num contato salvo sem código do país)
+    if len(d) in (10, 11) and not d.startswith("55"):
+        d = "55" + d
+    return d
+
+
+@router.post("/start")
+async def start_conversation(body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Conversar com um número (ex.: um contato que o cliente mandou): acha o contato nessa
+    conexão pelo número ou cria um novo. A mensagem só sai quando o atendente escrever."""
+    service = (
+        db.query(Service)
+        .filter(Service.account_id == user.account_id, Service.id == body.get("serviceId"), Service.archived_at.is_(None))
+        .first()
+    )
+    if not service:
+        raise HTTPException(422, detail={"message": "Conexão não encontrada"})
+    numero = _so_digitos(body.get("number"))
+    if not 10 <= len(numero) <= 15:
+        raise HTTPException(422, detail={"message": "Número inválido"})
+    filtros = [Contact.number == numero]
+    if service.type == "whatsapp":
+        filtros.append(Contact.jid == f"{numero}@s.whatsapp.net")
+    contact = db.query(Contact).filter(Contact.service_id == service.id, or_(*filtros)).first()
+    criado = contact is None
+    if criado:
+        nome = str(body.get("name") or "").strip()[:200]
+        contact = Contact(account_id=user.account_id, service_id=service.id, number=numero, name=nome or numero)
+        db.add(contact)
+        db.commit()
+        await emit(user.account_id, "contact.created", contact.to_dict())
+    return {**contact.to_dict(), "created": criado}
 
 
 @router.put("/{contact_id}")

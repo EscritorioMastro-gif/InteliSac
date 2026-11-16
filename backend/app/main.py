@@ -21,7 +21,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)  # não lista cada chamada 
 # Na internet, não sobe com chave fraca ou faltando (melhor parar do que ficar exposto).
 if settings.is_production and settings.problemas_de_producao():
     raise RuntimeError("Configuração insegura para produção: " + "; ".join(settings.problemas_de_producao()))
-from .routers import auth, channels, contacts, gateway, me, messages, now, resources, tickets
+from .routers import auth, channels, contacts, gateway, me, messages, now, resources, texto, tickets
 
 
 @asynccontextmanager
@@ -62,6 +62,7 @@ for r in (
     channels.router,
     gateway.router,
     now.router,
+    texto.router,
 ):
     app.include_router(r, prefix=API)
 for r in resources.routers:

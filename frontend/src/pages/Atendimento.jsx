@@ -62,6 +62,53 @@ function corDe(chave) {
   return CORES_GRUPO[h % CORES_GRUPO.length];
 }
 
+// Texto escuro em tag de cor clara (amarelo, verde-claro...) e branco nas escuras
+function corDoTexto(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return "#fff";
+  const n = parseInt(m[1], 16);
+  return 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 165 ? "#17282b" : "#fff";
+}
+
+// Tags do contato em miniatura (na lista mostra até `max` e "+N")
+function TagsMini({ ids, tags, max = 2 }) {
+  const lista = (ids || []).map((id) => tags.find((t) => t.id === id)).filter(Boolean);
+  if (!lista.length) return null;
+  const visiveis = lista.slice(0, max);
+  return (
+    <span className="tags-mini" title={lista.map((t) => t.label).join(", ")}>
+      {visiveis.map((t) => (
+        <span key={t.id} className="tag-mini" style={{ background: t.color, color: corDoTexto(t.color) }}>{t.label}</span>
+      ))}
+      {lista.length > max && <span className="tag-mini mais">+{lista.length - max}</span>}
+    </span>
+  );
+}
+
+// Há quanto tempo o cliente espera na fila
+function esperaDesde(iso, agora) {
+  if (!iso) return "";
+  const min = Math.max(0, Math.floor((agora - new Date(iso).getTime()) / 60000));
+  if (min < 1) return "agora";
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} h${min % 60 ? ` ${min % 60}` : ""}`;
+  return `${Math.floor(h / 24)} d`;
+}
+
+// 5516991452133 → +55 16 99145-2133
+function fmtNumero(n) {
+  const d = String(n || "").replace(/\D/g, "");
+  if (d.startsWith("55") && (d.length === 12 || d.length === 13)) {
+    const local = d.slice(4);
+    return `+55 ${d.slice(2, 4)} ${local.slice(0, local.length - 4)}-${local.slice(-4)}`;
+  }
+  return d ? `+${d}` : "";
+}
+
+// O WhatsApp só deixa editar até 15 minutos depois do envio
+const LIMITE_EDICAO_MS = 15 * 60 * 1000;
+
 export default function Atendimento() {
   const me = useMe();
   const toast = useToast();
@@ -86,6 +133,13 @@ export default function Atendimento() {
   const [arrastando, setArrastando] = useState(false);
   const [imagemAberta, setImagemAberta] = useState(null);
   const [respondendo, setRespondendo] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [rascunho, setRascunho] = useState("");
+  const [selecionadas, setSelecionadas] = useState(null); // encaminhar: ids marcados (null = fora do modo seleção)
+  const [tags, setTags] = useState([]);
+  const [correcao, setCorrecao] = useState(null); // { antes, depois, n }
+  const [corrigindo, setCorrigindo] = useState(false);
+  const [agora, setAgora] = useState(() => Date.now());
   const [destaque, setDestaque] = useState(null);
   const [gravando, setGravando] = useState(false);
   const [tempoGravacao, setTempoGravacao] = useState(0);
@@ -122,6 +176,10 @@ export default function Atendimento() {
     return () => clearTimeout(t);
   }, [carregarLista]);
 
+  const carregarTags = useCallback(() => {
+    api("/tags", { params: { perPage: 200 } }).then((r) => setTags(r.data)).catch(() => {});
+  }, []);
+
   useEffect(() => {
     Promise.all([
       api("/departments", { params: { perPage: 200 } }),
@@ -134,10 +192,26 @@ export default function Atendimento() {
       setAssuntos(t.data);
       setRespostas(q.data);
     });
-  }, []);
+    carregarTags();
+    // tag criada, renomeada ou apagada em outra tela: atualiza aqui
+    const s = getSocket();
+    ["tag.created", "tag.updated", "tag.destroyed"].forEach((ev) => s.on(ev, carregarTags));
+    return () => ["tag.created", "tag.updated", "tag.destroyed"].forEach((ev) => s.off(ev, carregarTags));
+  }, [carregarTags]);
+
+  // Fila: o "há quanto tempo espera" anda sozinho
+  useEffect(() => {
+    if (aba !== "queue") return undefined;
+    setAgora(Date.now());
+    const t = setInterval(() => setAgora(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [aba]);
 
   useEffect(() => {
     setRespondendo(null);
+    setEditando(null);
+    setSelecionadas(null);
+    setCorrecao(null);
     if (!selId) {
       setContato(null);
       setMensagens([]);
@@ -233,9 +307,11 @@ export default function Atendimento() {
     e?.preventDefault();
     const t = texto.trim();
     if (!t || !selId || enviando) return;
+    if (editando) return salvarEdicao(t);
     const citando = respondendo;
     setTexto("");
     setRespondendo(null);
+    setCorrecao(null);
     setEnviando(true);
     try {
       const m = await api("/messages", { method: "POST", body: { contactId: selId, text: t, replyToId: citando?.id } });
@@ -253,8 +329,142 @@ export default function Atendimento() {
 
   // ----- responder marcando e apagar -----
   const responder = (m) => {
+    if (editando) cancelarEdicao();
     setRespondendo(m);
     textoRef.current?.focus();
+  };
+
+  // ----- editar (só texto enviado por você, até 15 min) -----
+  const podeEditar = (m) =>
+    m.isFromMe && m.type === "chat" && m.userId === me.id && !m.data?.deleted && !m.data?.error && !m.data?.forwarded &&
+    Date.now() - new Date(m.createdAt).getTime() < LIMITE_EDICAO_MS;
+
+  const editar = (m) => {
+    if (!editando) setRascunho(texto); // guarda o que estava escrito para devolver depois
+    setRespondendo(null);
+    setCorrecao(null);
+    setEditando(m);
+    setTexto(m.text || "");
+    setTimeout(() => {
+      const el = textoRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    }, 0);
+  };
+
+  const cancelarEdicao = () => {
+    setEditando(null);
+    setCorrecao(null);
+    setTexto(rascunho);
+    setRascunho("");
+  };
+
+  const salvarEdicao = async (t) => {
+    const m = editando;
+    if (t === (m.text || "")) return cancelarEdicao();
+    setEnviando(true);
+    try {
+      const atualizada = await api(`/messages/${m.id}`, { method: "PUT", body: { text: t } });
+      setMensagens((prev) => prev.map((x) => (x.id === atualizada.id ? { ...x, ...atualizada } : x)));
+      setEditando(null);
+      setCorrecao(null);
+      setTexto(rascunho);
+      setRascunho("");
+      toast.show("Mensagem editada");
+    } catch (err) {
+      toast.show(err.message, "error");
+    } finally {
+      setEnviando(false);
+      textoRef.current?.focus();
+    }
+  };
+
+  // ----- corrigir meu texto (ortografia e pontuação) -----
+  const corrigirTexto = async () => {
+    const original = texto;
+    if (!original.trim() || corrigindo) return;
+    setCorrigindo(true);
+    try {
+      const r = await api("/text/correct", { method: "POST", body: { text: original } });
+      if (!r.corrections || r.text === original) {
+        setCorrecao(null);
+        toast.show("Nenhuma correção: o texto parece certo");
+      } else {
+        setTexto(r.text);
+        setCorrecao({ antes: original, depois: r.text, n: r.corrections });
+      }
+    } catch (err) {
+      toast.show(err.message, "error");
+    } finally {
+      setCorrigindo(false);
+      textoRef.current?.focus();
+    }
+  };
+
+  const desfazerCorrecao = () => {
+    if (!correcao) return;
+    setTexto(correcao.antes);
+    setCorrecao(null);
+    textoRef.current?.focus();
+  };
+
+  // ----- encaminhar: marca as mensagens e escolhe para quem -----
+  const podeEncaminhar = (m) => m.type !== "ticket" && !m.data?.deleted;
+
+  const iniciarSelecao = (m) => {
+    if (editando) cancelarEdicao();
+    setRespondendo(null);
+    setSelecionadas(new Set([m.id]));
+  };
+
+  const alternarSelecao = (m) => {
+    if (!podeEncaminhar(m)) return;
+    setSelecionadas((prev) => {
+      const s = new Set(prev);
+      if (s.has(m.id)) s.delete(m.id);
+      else if (s.size < 20) s.add(m.id);
+      else toast.show("Dá para encaminhar até 20 mensagens por vez", "error");
+      return s;
+    });
+  };
+
+  useEffect(() => {
+    if (!selecionadas) return undefined;
+    const onKey = (e) => e.key === "Escape" && !modal && setSelecionadas(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selecionadas, modal]);
+
+  const encaminhar = async (destinos) => {
+    const ids = mensagens.filter((m) => selecionadas?.has(m.id)).map((m) => m.id);
+    const r = await api("/messages/forward", { method: "POST", body: { messageIds: ids, contactIds: destinos.map((d) => d.id) } });
+    setModal(null);
+    setSelecionadas(null);
+    const para = destinos.length === 1 ? destinos[0].nome : `${destinos.length} conversas`;
+    if (r.failed) toast.show(`${r.failed} de ${r.sent + r.failed} não foram enviadas para ${para}. Veja a conversa.`, "error");
+    else toast.show(`${r.sent === 1 ? "Mensagem encaminhada" : `${r.sent} mensagens encaminhadas`} para ${para}`);
+  };
+
+  // ----- contato recebido (vCard): abrir conversa com ele -----
+  const conversarCom = async (c, numero) => {
+    try {
+      const r = await api("/contacts/start", { method: "POST", body: { serviceId: contato.serviceId, number: numero, name: c.name || undefined } });
+      setAba("all");
+      selecionar(r.id);
+      toast.show(r.created ? `Contato ${r.name} criado. Escreva a primeira mensagem.` : `Conversa com ${r.internalName || r.name}`);
+    } catch (e) {
+      toast.show(e.message, "error");
+    }
+  };
+
+  const salvarTags = async (tagIds) => {
+    await api(`/contacts/${selId}`, { method: "PUT", body: { tagIds } });
+    setModal(null);
+    toast.show("Tags atualizadas");
+    carregarConversa(selId);
+    carregarLista();
   };
 
   const podeApagar = (m) =>
@@ -416,6 +626,7 @@ export default function Atendimento() {
       }
       if (e.key === "Escape") return setTexto("");
     }
+    if (e.key === "Escape" && editando) return cancelarEdicao();
     if (e.key === "Escape" && respondendo) return setRespondendo(null);
     if (e.key === "Enter" && !e.shiftKey) enviar(e);
   };
@@ -444,6 +655,11 @@ export default function Atendimento() {
   };
   const quemApagou = (d) =>
     d.deletedBy === "contact" ? "pelo cliente" : d.deletedBy === "device" ? "pelo celular / outro aparelho" : d.deletedBy ? `por ${nomeUser(d.deletedBy)}` : "";
+  const sobreEdicao = (d) => {
+    const quem = d.editedBy === "contact" ? "pelo cliente" : d.editedBy === "device" ? "pelo celular / outro aparelho" : d.editedBy ? `por ${nomeUser(d.editedBy)}` : "";
+    const antes = (d.editHistory || []).map((h) => `“${h.text}”`).join("\n");
+    return `Editada ${quem}${d.editedAt ? ` às ${hora(d.editedAt)}` : ""}${antes ? `\nAntes:\n${antes}` : ""}`;
+  };
   const fmtTempo = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   // Mensagens agrupadas por dia
@@ -488,11 +704,20 @@ export default function Atendimento() {
               <Avatar nome={c.internalName || c.name} url={c.avatarUrl} grupo={c.isGroup} />
               <div className="grow">
                 <div className="row">
-                  <strong className="ellipsis">
-                    {c.isGroup && <Icon name="users" size={14} className="group-mark" title="Grupo" />}
-                    {c.internalName || c.name}
-                  </strong>
-                  <span className="time-small">{quandoCurto(c.lastMessageAt)}</span>
+                  <span className="name-line">
+                    <strong className="ellipsis">
+                      {c.isGroup && <Icon name="users" size={14} className="group-mark" title="Grupo" />}
+                      {c.internalName || c.name}
+                    </strong>
+                    <TagsMini ids={c.tagIds} tags={tags} />
+                  </span>
+                  {aba === "queue" && c.queuedAt ? (
+                    <span className="time-small wait" title={`Na fila desde ${new Date(c.queuedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`}>
+                      <Icon name="clock" size={12} />{esperaDesde(c.queuedAt, agora)}
+                    </span>
+                  ) : (
+                    <span className="time-small">{quandoCurto(c.lastMessageAt)}</span>
+                  )}
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="muted ellipsis preview">{c.lastMessage || c.data?.number}</span>
@@ -539,6 +764,10 @@ export default function Atendimento() {
                   <strong className="ellipsis">{contato.internalName || contato.name}</strong>{" "}
                   {contato.isGroup ? <span className="chip"><Icon name="users" size={12} />Grupo do WhatsApp</span> : <span className="muted small">{contato.data?.number}</span>}
                   <div className="meta">
+                    <TagsMini ids={contato.tagIds} tags={tags} max={4} />
+                    <button type="button" className="chip chip-btn" onClick={() => setModal("tags")} title="Escolher as tags deste contato">
+                      <Icon name="tag" size={12} />{contato.tagIds?.length ? "Editar" : "Tags"}
+                    </button>
                     {ticket ? (
                       <>
                         <span className="chip" title="Protocolo do chamado">#{ticket.protocol}</span>
@@ -570,7 +799,7 @@ export default function Atendimento() {
               </div>
             </header>
 
-            <div className="messages">
+            <div className={`messages ${selecionadas ? "selecting" : ""}`}>
               {itens.map((m) => {
                 if (m.sep) return <div key={m.id} className="day-sep">{m.sep}</div>;
                 if (m.type === "ticket") {
@@ -580,20 +809,33 @@ export default function Atendimento() {
                 }
                 const apagada = m.data?.deleted;
                 const r = m.data?.replyTo;
+                const contatosVcard = m.type === "vcard" ? m.data?.contacts || [] : [];
+                const marcada = selecionadas?.has(m.id);
                 return (
                   <div
                     key={m.id}
                     id={`msg-${m.id}`}
-                    className={`bubble ${m.isFromMe ? "me" : "them"} ${m.data?.error ? "failed" : ""} ${m.data?.file && !apagada ? "has-media" : ""} ${apagada ? "deleted" : ""} ${destaque === m.id ? "highlight" : ""}`}
+                    className={`bubble ${m.isFromMe ? "me" : "them"} ${m.data?.error ? "failed" : ""} ${m.data?.file && !apagada ? "has-media" : ""} ${apagada ? "deleted" : ""} ${destaque === m.id ? "highlight" : ""} ${marcada ? "marked" : ""} ${editando?.id === m.id ? "editing" : ""}`}
+                    onClickCapture={selecionadas ? (e) => { e.preventDefault(); e.stopPropagation(); alternarSelecao(m); } : undefined}
                   >
-                    {!apagada && (
+                    {selecionadas && podeEncaminhar(m) && (
+                      <span className={`sel-check ${marcada ? "on" : ""}`} role="checkbox" aria-checked={!!marcada} aria-label="Marcar para encaminhar">
+                        {marcada && <Icon name="check" size={13} />}
+                      </span>
+                    )}
+                    {!apagada && !selecionadas && (
                       <div className="bubble-actions">
                         <button type="button" className="icon-btn" onClick={() => responder(m)} title="Responder marcando esta mensagem" aria-label="Responder"><Icon name="reply" size={15} /></button>
+                        {podeEditar(m) && (
+                          <button type="button" className="icon-btn" onClick={() => editar(m)} title="Editar mensagem (até 15 min depois do envio)" aria-label="Editar"><Icon name="edit" size={15} /></button>
+                        )}
+                        <button type="button" className="icon-btn" onClick={() => iniciarSelecao(m)} title="Encaminhar para outra conversa" aria-label="Encaminhar"><Icon name="forward" size={15} /></button>
                         {podeApagar(m) && (
                           <button type="button" className="icon-btn" onClick={() => apagar(m)} title="Apagar para todos" aria-label="Apagar para todos"><Icon name="trash" size={15} /></button>
                         )}
                       </div>
                     )}
+                    {m.data?.forwarded && !apagada && <div className="fwd-label"><Icon name="forward" size={12} />Encaminhada</div>}
                     {m.isFromMe && m.userId && (
                       <div className="author" title={m.data?.signed ? "O cliente recebeu a mensagem assinada com este nome" : undefined}>
                         {nomeUser(m.userId)}{m.data?.signed && <span className="signed"> · assinada</span>}
@@ -620,11 +862,34 @@ export default function Atendimento() {
                     ) : (
                       <>
                         <Midia m={m} onAbrirImagem={setImagemAberta} onLinkExpirado={() => carregarConversa(selId)} />
-                        {m.text && <div className="text">{m.text}</div>}
+                        {contatosVcard.length > 0 ? (
+                          <div className="vcards">
+                            {contatosVcard.map((c, i) => (
+                              <div key={i} className="vcard">
+                                <span className="vcard-icon"><Icon name="user" size={18} /></span>
+                                <div className="vcard-info">
+                                  <strong className="ellipsis">{c.name || "Contato"}</strong>
+                                  {(c.numbers || []).length === 0 && <small className="muted">Sem número no contato</small>}
+                                  {(c.numbers || []).map((n) => (
+                                    <div key={n} className="vcard-num">
+                                      <span>{fmtNumero(n)}</span>
+                                      <button type="button" className="link" onClick={() => conversarCom(c, n)} title="Abrir uma conversa com este número no InteliSac">
+                                        <Icon name="chat" size={14} />Conversar
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          m.text && <div className="text">{m.text}</div>
+                        )}
                         {m.data?.fileError && <div className="fail small">Arquivo não pôde ser salvo ({m.data.fileError})</div>}
                       </>
                     )}
                     <div className="time">
+                      {m.data?.edited && !apagada && <span className="edited" title={sobreEdicao(m.data)}>editada ·</span>}
                       {hora(m.createdAt)}
                       {m.data?.error && <span className="fail"> · não enviada</span>}
                       <Tiques m={m} />
@@ -635,6 +900,19 @@ export default function Atendimento() {
               <div ref={fimRef} />
             </div>
 
+            {selecionadas ? (
+              <div className="select-bar">
+                <button type="button" className="icon-btn" onClick={() => setSelecionadas(null)} title="Cancelar (Esc)" aria-label="Cancelar encaminhamento"><Icon name="x" size={18} /></button>
+                <span className="grow">
+                  <strong>{selecionadas.size}</strong> {selecionadas.size === 1 ? "mensagem marcada" : "mensagens marcadas"}
+                  <span className="muted"> · clique nas mensagens para marcar ou desmarcar</span>
+                </span>
+                <button type="button" className="primary" disabled={!selecionadas.size} onClick={() => setModal("encaminhar")}>
+                  <Icon name="forward" size={16} /><span>Encaminhar</span>
+                </button>
+              </div>
+            ) : (
+            <>
             {respondendo && (
               <div className="reply-bar">
                 <Icon name="reply" size={16} />
@@ -643,6 +921,23 @@ export default function Atendimento() {
                   <span>{resumoMsg(respondendo)}</span>
                 </div>
                 <button type="button" className="icon-btn" onClick={() => setRespondendo(null)} title="Cancelar resposta (Esc)" aria-label="Cancelar resposta"><Icon name="x" size={16} /></button>
+              </div>
+            )}
+            {editando && (
+              <div className="reply-bar edit-bar">
+                <Icon name="edit" size={16} />
+                <div className="quote static">
+                  <strong>Editando mensagem · o cliente vê a versão nova com “Editada”</strong>
+                  <span>{editando.text}</span>
+                </div>
+                <button type="button" className="icon-btn" onClick={cancelarEdicao} title="Cancelar edição (Esc)" aria-label="Cancelar edição"><Icon name="x" size={16} /></button>
+              </div>
+            )}
+            {correcao && texto === correcao.depois && (
+              <div className="fix-bar" role="status">
+                <Icon name="check" size={14} />
+                <span>{correcao.n === 1 ? "1 correção feita" : `${correcao.n} correções feitas`}. Confira antes de enviar.</span>
+                <button type="button" className="link" onClick={desfazerCorrecao}>Desfazer</button>
               </div>
             )}
 
@@ -675,12 +970,14 @@ export default function Atendimento() {
                   e.target.value = "";
                 }}
               />
-              <button type="button" className="icon-btn attach-btn" onClick={() => arquivoRef.current?.click()} title="Anexar arquivo (ou arraste para a conversa / cole um print com Ctrl+V)" aria-label="Anexar arquivo">
-                <Icon name="paperclip" size={20} />
-              </button>
+              {!editando && (
+                <button type="button" className="icon-btn attach-btn" onClick={() => arquivoRef.current?.click()} title="Anexar arquivo (ou arraste para a conversa / cole um print com Ctrl+V)" aria-label="Anexar arquivo">
+                  <Icon name="paperclip" size={20} />
+                </button>
+              )}
               <textarea
                 ref={textoRef}
-                placeholder="Escreva uma mensagem…  ( / para respostas rápidas · Shift+Enter quebra linha )"
+                placeholder={editando ? "Texto novo da mensagem…" : "Escreva uma mensagem…  ( / para respostas rápidas · Shift+Enter quebra linha )"}
                 value={texto}
                 onChange={(e) => setTexto(e.target.value)}
                 onKeyDown={onKeyDown}
@@ -688,7 +985,16 @@ export default function Atendimento() {
                 rows={1}
                 aria-label="Mensagem"
               />
-              {texto.trim() ? (
+              {texto.trim() && !texto.startsWith("/") && (
+                <button type="button" className="fix-btn" onClick={corrigirTexto} disabled={corrigindo || enviando} title="Corrigir meu texto: ortografia e pontuação (você confere antes de enviar)">
+                  <Icon name="wand" size={17} /><span>{corrigindo ? "Corrigindo…" : "Corrigir"}</span>
+                </button>
+              )}
+              {editando ? (
+                <button className="primary" disabled={enviando || !texto.trim()} title="Salvar edição (Enter)" aria-label="Salvar edição">
+                  <Icon name="check" size={18} />
+                </button>
+              ) : texto.trim() ? (
                 <button className="primary" disabled={enviando} title="Enviar (Enter)" aria-label="Enviar">
                   <Icon name="send" size={17} />
                 </button>
@@ -698,6 +1004,8 @@ export default function Atendimento() {
                 </button>
               )}
             </form>
+            )}
+            </>
             )}
           </>
         )}
@@ -758,7 +1066,130 @@ export default function Atendimento() {
           }}
         />
       )}
+      {modal === "tags" && contato && (
+        <TagsModal tags={tags} atuais={contato.tagIds || []} nome={nomeContato} onClose={() => setModal(null)} onOk={salvarTags} />
+      )}
+      {modal === "encaminhar" && selecionadas && (
+        <EncaminharModal quantidade={selecionadas.size} onClose={() => setModal(null)} onOk={encaminhar} />
+      )}
     </div>
+  );
+}
+
+function TagsModal({ tags, atuais, nome, onClose, onOk }) {
+  const [sel, setSel] = useState(atuais);
+  const [erro, setErro] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const toggle = (id) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const salvar = async () => {
+    setSalvando(true);
+    try {
+      await onOk(sel);
+    } catch (e) {
+      setErro(e.message);
+      setSalvando(false);
+    }
+  };
+  return (
+    <Modal titulo={`Tags de ${nome}`} onClose={onClose}>
+      <div className="checks tag-checks">
+        {tags.length === 0 && <span className="muted small">Nenhuma tag cadastrada ainda (menu Tags).</span>}
+        {tags.map((t) => (
+          <label key={t.id} className="check">
+            <input type="checkbox" checked={sel.includes(t.id)} onChange={() => toggle(t.id)} />
+            <span className="tag-mini" style={{ background: t.color, color: corDoTexto(t.color) }}>{t.label}</span>
+          </label>
+        ))}
+      </div>
+      {erro && <div className="error">{erro}</div>}
+      <div className="modal-actions">
+        <button onClick={onClose}>Cancelar</button>
+        <button className="primary" disabled={salvando} onClick={salvar}><Icon name="check" size={16} />{salvando ? "Salvando…" : "Salvar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function EncaminharModal({ quantidade, onClose, onOk }) {
+  const [busca, setBusca] = useState("");
+  const [lista, setLista] = useState([]);
+  const [escolhidos, setEscolhidos] = useState([]); // [{ id, nome }]
+  const [erro, setErro] = useState("");
+  const [enviando, setEnviando] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      api("/contacts", { params: { filter: "all", q: busca.trim() || undefined, perPage: 30 } })
+        .then((r) => setLista(r.data))
+        .catch((e) => setErro(e.message));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [busca]);
+
+  const toggle = (c) => {
+    const nome = c.internalName || c.name;
+    setEscolhidos((atual) => {
+      if (atual.some((x) => x.id === c.id)) return atual.filter((x) => x.id !== c.id);
+      if (atual.length >= 10) {
+        setErro("Escolha até 10 conversas por vez");
+        return atual;
+      }
+      setErro("");
+      return [...atual, { id: c.id, nome }];
+    });
+  };
+
+  const confirmar = async () => {
+    setEnviando(true);
+    setErro("");
+    try {
+      await onOk(escolhidos);
+    } catch (e) {
+      setErro(e.message);
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <Modal titulo={`Encaminhar ${quantidade === 1 ? "1 mensagem" : `${quantidade} mensagens`}`} onClose={enviando ? () => {} : onClose} largura="520px">
+      <div className="search-box">
+        <Icon name="search" size={16} />
+        <input autoFocus placeholder="Buscar conversa por nome ou número" value={busca} onChange={(e) => setBusca(e.target.value)} aria-label="Buscar conversa" />
+      </div>
+      {escolhidos.length > 0 && (
+        <div className="picked">
+          {escolhidos.map((c) => (
+            <button key={c.id} type="button" className="chip" onClick={() => setEscolhidos((a) => a.filter((x) => x.id !== c.id))} title="Tirar">
+              {c.nome}<Icon name="x" size={12} />
+            </button>
+          ))}
+        </div>
+      )}
+      <ul className="pick-list">
+        {lista.length === 0 && <li className="muted small" style={{ cursor: "default" }}>Nenhuma conversa encontrada.</li>}
+        {lista.map((c) => {
+          const marcado = escolhidos.some((x) => x.id === c.id);
+          return (
+            <li key={c.id} className={marcado ? "sel" : ""} onClick={() => toggle(c)}>
+              <input type="checkbox" checked={marcado} readOnly tabIndex={-1} aria-hidden="true" />
+              <Avatar nome={c.internalName || c.name} url={c.avatarUrl} grupo={c.isGroup} size={32} />
+              <div className="grow" style={{ minWidth: 0 }}>
+                <strong className="ellipsis" style={{ display: "block" }}>{c.internalName || c.name}</strong>
+                <small className="muted">{c.isGroup ? "Grupo" : fmtNumero(c.data?.number)}</small>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="muted small" style={{ margin: "8px 0 0" }}>Vai como “Encaminhada”, sem a assinatura do seu nome.</p>
+      {erro && <div className="error">{erro}</div>}
+      <div className="modal-actions">
+        <button onClick={onClose} disabled={enviando}>Cancelar</button>
+        <button className="primary" disabled={enviando || !escolhidos.length} onClick={confirmar}>
+          <Icon name="forward" size={16} />{enviando ? "Encaminhando…" : `Encaminhar${escolhidos.length > 1 ? ` (${escolhidos.length})` : ""}`}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
