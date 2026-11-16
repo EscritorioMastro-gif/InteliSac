@@ -2,15 +2,21 @@
 
 from contextlib import asynccontextmanager
 
+import asyncio
+import logging
+
 import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import logging
-
-from . import migrate, storage
+from . import migrate, realtime, storage
 from .config import settings
+from .protecao import CabecalhosDeSeguranca, LimiteDeCorpo
 from .realtime import sio
+
+# Na internet, não sobe com chave fraca ou faltando (melhor parar do que ficar exposto).
+if settings.is_production and settings.problemas_de_producao():
+    raise RuntimeError("Configuração insegura para produção: " + "; ".join(settings.problemas_de_producao()))
 from .routers import auth, channels, contacts, gateway, me, messages, now, resources, tickets
 
 
@@ -24,16 +30,22 @@ async def lifespan(_app: FastAPI):
             storage.ensure_bucket()
         except storage.StorageError as e:
             logging.getLogger("intelisac").warning("Storage indisponível: %s", e)
+    # Desconecta do tempo real quem teve o acesso vencido ou o usuário arquivado
+    vigia = asyncio.create_task(realtime.vigiar_conexoes())
     yield
+    vigia.cancel()
 
 
-app = FastAPI(title="InteliSac API", version="0.1.0", lifespan=lifespan)
+# Documentação automática da API (/docs) só fora da produção: na internet ela vira um mapa para ataque.
+_docs = {} if not settings.is_production else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="InteliSac API", version="0.1.0", lifespan=lifespan, **_docs)
+# O login vai no cabeçalho Authorization (não em cookie): credenciais do CORS ficam desligadas.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 API = "/api/v1"
@@ -57,5 +69,5 @@ def health():
     return {"ok": True, "app": "InteliSac"}
 
 
-# App ASGI final: socket.io em /socket.io + FastAPI no resto.
-asgi = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="socket.io")
+# App ASGI final: socket.io em /socket.io + FastAPI no resto (com teto de corpo e cabeçalhos de segurança).
+asgi = socketio.ASGIApp(sio, other_asgi_app=CabecalhosDeSeguranca(LimiteDeCorpo(app)), socketio_path="socket.io")

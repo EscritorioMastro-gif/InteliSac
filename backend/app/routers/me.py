@@ -18,6 +18,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(get_db)):
     data["departments"] = [d.to_dict() for d in user.departments]
     data["permissions"] = ["*"] if user.is_admin else (user.role.permissions if user.role else [])
     data["account"] = db.get(Account, user.account_id).to_dict()
+    data["features"] = {"simulator": settings.enable_simulator}
     return data
 
 

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .. import ticketing
+from ..config import settings
 from ..db import get_db
 from ..deps import current_user
 from ..models import Service, User
@@ -44,16 +45,25 @@ async def _receive(db: Session, service: Service, body: dict) -> dict:
 async def channel_webhook(service_id: str, request: Request, body: dict = Body(...), db: Session = Depends(get_db)):
     service = db.get(Service, service_id)
     token = request.headers.get("X-Channel-Token", "")
-    if not service or service.archived_at is not None or not hmac.compare_digest(token, service.webhook_token):
+    # O WhatsApp por QR recebe pelo gateway (com segredo próprio); webhook não vale para ele.
+    if (
+        not service
+        or service.archived_at is not None
+        or service.type == "whatsapp"
+        or not hmac.compare_digest(token.encode(), (service.webhook_token or "").encode())
+    ):
         raise HTTPException(401, detail={"message": "Conexão ou token inválido"})
     return await _receive(db, service, body)
 
 
 @router.post("/simulator/inbound")
 async def simulator_inbound(body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    # Só nas conexões de teste: no WhatsApp de verdade isso criaria mensagem falsa "do cliente".
+    if not settings.enable_simulator:
+        raise HTTPException(404, detail={"message": "Simulador desligado"})
     service = (
         db.query(Service)
-        .filter(Service.account_id == user.account_id, Service.id == body.get("serviceId"))
+        .filter(Service.account_id == user.account_id, Service.id == body.get("serviceId"), Service.type == "simulador")
         .first()
     )
     if not service:

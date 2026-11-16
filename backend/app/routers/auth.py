@@ -1,8 +1,12 @@
 """POST /api/v1/oauth/token — mesmo contrato do Digisac (OAuth2 password / refresh_token).
 
 Com o Supabase Auth configurado (SUPABASE_URL + SUPABASE_ANON_KEY), o e-mail e a senha são
-conferidos no Supabase; o usuário também precisa existir (ativo) no InteliSac com o mesmo e-mail.
+conferidos no Supabase; o usuário do Supabase precisa estar VINCULADO (users.auth_user_id) a um
+usuário ativo do InteliSac. Não vale só o e-mail igual: o cadastro público do Supabase deixaria
+qualquer pessoa criar uma conta com o e-mail de um colaborador ainda não vinculado.
 Usuários antigos com senha local (ex.: o admin criado pelo seed) continuam entrando pela senha local.
+
+Senha errada demais (30 por IP em 5 min, ou 10 no mesmo e-mail em 15 min) → 429 por alguns minutos.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import supabase_auth
 from ..config import settings
+from ..protecao import ip_do_cliente, login_por_email, login_por_ip
 from ..db import get_db
 from ..models import User
 from ..security import create_tokens, decode_token, verify_password
@@ -19,12 +24,17 @@ router = APIRouter(tags=["auth"])
 INVALID = {"error": "invalid_grant", "message": "E-mail ou senha inválidos"}
 
 
-def _active_user(db: Session, email: str, auth_user_id: str | None = None) -> User | None:
-    user = None
-    if auth_user_id:
-        user = db.query(User).filter(User.auth_user_id == auth_user_id).first()
-    if user is None:
-        user = db.query(User).filter(User.email == email).first()
+def _active_user(db: Session, email: str) -> User | None:
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or user.archived_at is not None:
+        return None
+    return user
+
+
+def _linked_user(db: Session, auth_user_id: str | None) -> User | None:
+    if not auth_user_id:
+        return None
+    user = db.query(User).filter(User.auth_user_id == auth_user_id).first()
     if user is None or user.archived_at is not None:
         return None
     return user
@@ -40,15 +50,12 @@ async def _password_login(db: Session, email: str, password: str) -> User:
         else:
             supabase_down = False
         if auth_user:
-            user = _active_user(db, email, auth_user.get("id"))
+            user = _linked_user(db, auth_user.get("id"))
             if user is None:
                 raise HTTPException(
                     403,
-                    detail={"error": "not_registered", "message": "Login válido, mas este e-mail não está cadastrado (ou está arquivado) no InteliSac. Peça ao administrador."},
+                    detail={"error": "not_registered", "message": "Login válido, mas este acesso não está liberado (ou está arquivado) no InteliSac. Peça ao administrador."},
                 )
-            if not user.auth_user_id and auth_user.get("id"):
-                user.auth_user_id = auth_user["id"]
-                db.commit()
             return user
         # Senha recusada pelo Supabase (ou Supabase fora): só usuários com senha local podem entrar.
         user = _active_user(db, email)
@@ -64,24 +71,49 @@ async def _password_login(db: Session, email: str, password: str) -> User:
     return user
 
 
+def _bloqueado(segundos: int):
+    minutos = max(1, round(segundos / 60))
+    return HTTPException(
+        429,
+        detail={"error": "too_many_attempts", "message": f"Muitas tentativas de login. Tente de novo em {minutos} min."},
+        headers={"Retry-After": str(segundos)},
+    )
+
+
 @router.post("/oauth/token")
 async def token(request: Request, db: Session = Depends(get_db)):
-    if request.headers.get("content-type", "").startswith("application/json"):
-        form = await request.json()
-    else:
-        form = dict(await request.form())
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            form = await request.json()
+        else:
+            form = dict(await request.form())
+    except ValueError:
+        form = None
+    if not isinstance(form, dict):
+        raise HTTPException(400, detail={"error": "invalid_request"})
     grant = form.get("grant_type", "password")
 
     if grant == "password":
-        email = (form.get("username") or "").strip().lower()
-        password = form.get("password") or ""
+        email = str(form.get("username") or "").strip().lower()[:200]
+        password = str(form.get("password") or "")[:200]
+        ip = ip_do_cliente(request)
+        espera = max(login_por_ip.espera(ip), login_por_email.espera(email))
+        if espera:
+            raise _bloqueado(espera)
         if not email or not password:
             raise HTTPException(401, detail=INVALID)
-        user = await _password_login(db, email, password)
+        try:
+            user = await _password_login(db, email, password)
+        except HTTPException as e:
+            if e.status_code == 401:
+                login_por_ip.falhou(ip)
+                login_por_email.falhou(email)
+            raise
+        login_por_email.zera(email)
         return create_tokens(user.id, user.account_id)
 
     if grant == "refresh_token":
-        data = decode_token(form.get("refresh_token") or "", expected_type="refresh")
+        data = decode_token(str(form.get("refresh_token") or ""), expected_type="refresh")
         user = db.get(User, data["sub"]) if data else None
         if not user or user.archived_at is not None:
             raise HTTPException(401, detail={"error": "invalid_grant", "message": "Sessão expirada"})

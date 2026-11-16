@@ -18,7 +18,7 @@ from ..models import (
 from ..security import hash_password
 
 
-def _sync_supabase_user(obj: User, password: str | None, email_changed: bool, creating: bool) -> None:
+def _sync_supabase_user(db, obj: User, password: str | None, email_changed: bool, creating: bool) -> None:
     """Cria/vincula/atualiza o usuário no Supabase Auth. A senha não fica no banco do InteliSac."""
     if not settings.supabase_service_role_key:
         raise HTTPException(422, detail={"message": "Configure SUPABASE_SERVICE_ROLE_KEY no backend/.env para gerenciar usuários do Supabase."})
@@ -32,18 +32,19 @@ def _sync_supabase_user(obj: User, password: str | None, email_changed: bool, cr
             if fields:
                 supabase_auth.update_user(obj.auth_user_id, **fields)
         elif password or creating:
+            if not password:
+                # Sem senha nova não vincula: alguém pode ter criado essa conta no Supabase antes
+                # (cadastro público) e entraria com a senha dele.
+                raise HTTPException(422, detail={"message": "Informe uma senha para este usuário."})
             existing = supabase_auth.find_user_by_email(obj.email)
             if existing:
+                outro = db.query(User).filter(User.auth_user_id == existing["id"], User.id != obj.id).first()
+                if outro:
+                    raise HTTPException(422, detail={"message": "Esse login do Supabase já está ligado a outro usuário do InteliSac."})
                 obj.auth_user_id = existing["id"]
-                if password:
-                    supabase_auth.update_user(existing["id"], password=password)
-            elif password:
-                obj.auth_user_id = supabase_auth.create_user(obj.email, password, obj.name)["id"]
+                supabase_auth.update_user(existing["id"], password=password, email_confirm=True)
             else:
-                raise HTTPException(
-                    422,
-                    detail={"message": "Informe uma senha, ou crie antes o usuário no Supabase (Authentication → Users) com este e-mail."},
-                )
+                obj.auth_user_id = supabase_auth.create_user(obj.email, password, obj.name)["id"]
             obj.password_hash = ""  # passa a entrar só pelo Supabase
     except supabase_auth.AuthServiceError as e:
         raise HTTPException(502, detail={"message": str(e)})
@@ -62,7 +63,7 @@ def _user_hook(db, obj: User, body: dict, actor: User, creating: bool):
     if password and len(password) < 8:
         raise HTTPException(422, detail={"message": "A senha precisa ter pelo menos 8 caracteres"})
     if settings.supabase_auth_enabled:
-        _sync_supabase_user(obj, password, email_changed and not creating, creating)
+        _sync_supabase_user(db, obj, password, email_changed and not creating, creating)
     elif password:
         obj.password_hash = hash_password(password)
     elif creating:

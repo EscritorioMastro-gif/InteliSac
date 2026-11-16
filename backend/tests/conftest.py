@@ -26,6 +26,16 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def limites_de_login_zerados():
+    """Cada teste começa sem tentativas de login erradas contadas (todos vêm do mesmo IP)."""
+    from app import protecao
+
+    protecao.login_por_ip.zera_tudo()
+    protecao.login_por_email.zera_tudo()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def sem_busca_de_fotos(request, monkeypatch):
     """A busca da foto do perfil roda em segundo plano e falaria com o WhatsApp; nos testes
     gerais fica desligada (test_avisos_grupos_fotos testa ela de propósito)."""

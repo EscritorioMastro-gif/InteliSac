@@ -23,7 +23,7 @@ const MENU = [
   { to: "/agora", label: "Agora", icon: "pulse" },
   { to: "/contatos", label: "Contatos", icon: "contacts" },
   { to: "/respostas", label: "Respostas rápidas", icon: "zap" },
-  { to: "/simulador", label: "Simulador", icon: "phone" },
+  { to: "/simulador", label: "Simulador", icon: "phone", simulador: true },
   { section: "Configurações", admin: true },
   { to: "/conexoes", label: "Conexões", icon: "plug", admin: true },
   { to: "/usuarios", label: "Usuários", icon: "user", admin: true },
@@ -119,7 +119,7 @@ function Layout() {
             <span className="brand-name">Inteli<span>Sac</span></span>
           </div>
           <nav>
-            {MENU.filter((m) => !m.admin || me.isAdmin).map((m) =>
+            {MENU.filter((m) => (!m.admin || me.isAdmin) && (!m.simulador || me.features?.simulator)).map((m) =>
               m.section ? (
                 <div key={m.section} className="nav-section">{m.section}</div>
               ) : (
@@ -186,7 +186,7 @@ function Layout() {
             <Route path="/" element={<Atendimento />} />
             <Route path="/agora" element={<Agora />} />
             <Route path="/contatos" element={<Contatos />} />
-            <Route path="/simulador" element={<Simulador />} />
+            {me.features?.simulator && <Route path="/simulador" element={<Simulador />} />}
             <Route path="/departamentos" element={<Cadastro titulo="Departamentos" subtitulo="Filas de atendimento. Cada atendente vê os chamados dos seus departamentos." path="/departments" campos={[{ name: "name", label: "Nome" }]} arquivar />} />
             <Route path="/assuntos" element={<Cadastro titulo="Assuntos de chamado" subtitulo="Motivos escolhidos ao fechar um chamado, usados nos relatórios." path="/ticket-topics" campos={[{ name: "name", label: "Nome" }]} arquivar />} />
             <Route path="/tags" element={<Cadastro titulo="Tags" subtitulo="Etiquetas para organizar os contatos." path="/tags" campos={[{ name: "label", label: "Nome" }, { name: "color", label: "Cor", type: "color" }]} colunas={[{ name: "label", label: "Nome", render: (v, it) => <span className="tag" style={{ background: it.color }}>{v}</span> }]} />} />

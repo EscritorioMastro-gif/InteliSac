@@ -47,6 +47,13 @@ function quandoCurto(iso) {
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
+// ?contact= da página: só aceita um código de contato (um link com outro texto não monta outro endereço da API)
+const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function idDaUrl(params) {
+  const v = params.get("contact");
+  return v && ID_RE.test(v) ? v : null;
+}
+
 // Cor estável por pessoa, para diferenciar quem fala num grupo
 const CORES_GRUPO = ["#0f5e66", "#2a7f62", "#3c6e91", "#7a5c99", "#b5654a", "#8a7a2e", "#9c4f6b", "#4f6d7a"];
 function corDe(chave) {
@@ -64,7 +71,7 @@ export default function Atendimento() {
   const [contatos, setContatos] = useState([]);
   const [contagens, setContagens] = useState({});
   const [carregandoLista, setCarregandoLista] = useState(true);
-  const [selId, setSelId] = useState(params.get("contact"));
+  const [selId, setSelId] = useState(() => idDaUrl(params));
   const [contato, setContato] = useState(null);
   const [mensagens, setMensagens] = useState([]);
   const [texto, setTexto] = useState("");
@@ -89,7 +96,7 @@ export default function Atendimento() {
   const textoRef = useRef(null);
   const selRef = useRef(selId);
   selRef.current = selId;
-  const contatoDaUrl = params.get("contact");
+  const contatoDaUrl = idDaUrl(params);
 
   // Clique na notificação muda o ?contact= da página: abre essa conversa
   useEffect(() => {

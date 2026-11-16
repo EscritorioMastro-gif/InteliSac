@@ -9,6 +9,7 @@
 // Rodar:  node --env-file=.env server.js
 
 import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import * as baileys from "@whiskeysockets/baileys";
@@ -36,6 +37,16 @@ const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
 if (!SECRET) {
   console.error("GATEWAY_SECRET não definido. Copie .env.example para .env.");
   process.exit(1);
+}
+// No servidor (Render), segredo curto não sobe: é ele que protege o envio de mensagens.
+if (process.env.RENDER === "true" && SECRET.length < 32) {
+  console.error("GATEWAY_SECRET curto demais para produção (mínimo 32 caracteres).");
+  process.exit(1);
+}
+const SECRET_BUF = Buffer.from(SECRET);
+function segredoConfere(dado) {
+  const b = Buffer.from(String(dado || ""));
+  return b.length === SECRET_BUF.length && timingSafeEqual(b, SECRET_BUF);
 }
 
 const logger = pino({ level: process.env.LOG_LEVEL || "warn" });
@@ -511,10 +522,13 @@ const server = createServer(async (req, res) => {
   };
   try {
     const url = new URL(req.url, "http://localhost");
+    const autorizado = segredoConfere(req.headers["x-gateway-secret"]);
     if (req.method === "GET" && url.pathname === "/health") {
+      // Sem o segredo, só diz que está no ar (o número conectado não aparece)
+      if (!autorizado) return reply(200, { ok: true });
       return reply(200, { ok: true, sessions: [...sessions.values()].map(publicState), pendingEvents: queue.length });
     }
-    if (req.headers["x-gateway-secret"] !== SECRET) return reply(401, { message: "Não autorizado" });
+    if (!autorizado) return reply(401, { message: "Não autorizado" });
     const [root, id, action = ""] = url.pathname.split("/").filter(Boolean);
     if (root !== "sessions" || !id || !ID_RE.test(id)) return reply(404, { message: "Rota não encontrada" });
     const s = sessions.get(id);

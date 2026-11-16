@@ -54,14 +54,21 @@ def test_usuario_do_supabase_nao_cadastrado_no_intelisac(client, supabase_on):
     assert r.status_code == 403 and r.json()["detail"]["error"] == "not_registered"
 
 
-def test_vincular_usuario_existente_sem_senha_e_logar(client, auth, supabase_on):
+def test_vincular_usuario_existente_exige_senha_nova(client, auth, supabase_on):
+    # A conta já existe no Supabase (pode ter sido criada por qualquer um pelo cadastro público):
+    # sem senha nova o InteliSac não vincula.
     r = client.post(f"{API}/users", json={"name": "Gabriel", "email": "Gabriel@Exemplo.com", "isAdmin": True}, headers=auth)
+    assert r.status_code == 422 and "senha" in r.json()["detail"]["message"]
+
+    r = client.post(f"{API}/users", json={"name": "Gabriel", "email": "Gabriel@Exemplo.com", "isAdmin": True, "password": "SenhaNova!22"}, headers=auth)
     assert r.status_code == 201, r.text
     u = r.json()
     assert u["authProvider"] == "supabase" and supabase_on["created"] == []
+    assert supabase_on["updated"][-1] == ("auth-gabriel", {"password": "SenhaNova!22", "email_confirm": True})
 
-    assert _login(client, "gabriel@exemplo.com", "errada").status_code == 401
-    r = _login(client, "gabriel@exemplo.com", "SenhaForte!1")
+    # a senha antiga (de quem criou a conta no Supabase) não entra mais
+    assert _login(client, "gabriel@exemplo.com", "SenhaForte!1").status_code == 401
+    r = _login(client, "gabriel@exemplo.com", "SenhaNova!22")
     assert r.status_code == 200
     me = client.get(f"{API}/me", headers={"Authorization": f"Bearer {r.json()['access_token']}"}).json()
     assert me["email"] == "gabriel@exemplo.com" and me["isAdmin"] is True
