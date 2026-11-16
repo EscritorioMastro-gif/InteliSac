@@ -14,6 +14,10 @@ from .config import settings
 from .protecao import CabecalhosDeSeguranca, LimiteDeCorpo
 from .realtime import sio
 
+# Registro: logins (ok, recusado, bloqueado) e saídas aparecem nos Logs do Render.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     [%(name)s] %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # não lista cada chamada ao Supabase
+
 # Na internet, não sobe com chave fraca ou faltando (melhor parar do que ficar exposto).
 if settings.is_production and settings.problemas_de_producao():
     raise RuntimeError("Configuração insegura para produção: " + "; ".join(settings.problemas_de_producao()))

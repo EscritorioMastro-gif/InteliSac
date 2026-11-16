@@ -149,6 +149,11 @@ Banco, arquivos e login continuam no Supabase.
 **Segurança no ar:** a API não sobe com chave faltando/fraca (`JWT_SECRET`, `GATEWAY_SECRET`,
 Supabase, banco Postgres), `/docs` fica fechado, o Simulador fica desligado (`ENABLE_SIMULATOR`)
 e a tela sai com CSP (só scripts do próprio site; só conversa com a própria API e o Supabase).
+Também: limite de tentativas de login (por e-mail+IP, por IP e por e-mail), **Sair** e troca de senha
+encerram os logins no servidor (`users.token_version`), arquivos grandes só são recebidos depois de
+conferido o login/segredo, QR code de conexão só para administradores, pedidos com cara de arquivo
+(`/.env`, `/x.php`) recebem 404 e o site pede para não ser indexado. Logins (ok, recusado,
+bloqueado) e saídas aparecem nos **Logs** do serviço no Render, com o IP.
 
 ## Próximos passos
 

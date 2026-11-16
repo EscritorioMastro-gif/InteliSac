@@ -96,7 +96,7 @@ function Layout() {
 
   const sair = async () => {
     await api("/me/status", { method: "PUT", body: { status: "offline" } }).catch(() => {});
-    logout();
+    await logout(); // avisa o servidor: os logins deste usuário deixam de valer
     closeSocket();
     navigate("/login");
   };

@@ -32,6 +32,7 @@ def limites_de_login_zerados():
 
     protecao.login_por_ip.zera_tudo()
     protecao.login_por_email.zera_tudo()
+    protecao.login_por_email_ip.zera_tudo()
     yield
 
 

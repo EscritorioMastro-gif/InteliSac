@@ -10,15 +10,19 @@ o login guardado no navegador para outro lugar.
 """
 
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 
 DIST = Path(os.getenv("FRONTEND_DIST") or Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
+# As telas do sistema são /login, /contatos... (sem ponto). Pedido com cara de arquivo (.env, x.php,
+# .git/config) que não existe na tela é sondagem: responde 404 em vez de devolver a página.
+_CARA_DE_ARQUIVO = re.compile(r"(^|/)\.|\.[A-Za-z0-9]{1,8}$")
 
 
 class _Arquivos(StaticFiles):
@@ -60,6 +64,10 @@ def montar(app: FastAPI) -> bool:
     if (DIST / "assets").is_dir():
         app.mount("/assets", _Arquivos(directory=DIST / "assets"), name="assets")
 
+    @app.get("/robots.txt", include_in_schema=False)
+    def robots():
+        return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
     @app.get("/{caminho:path}", include_in_schema=False)
     def tela(caminho: str, request: Request):
         if caminho == "api" or caminho.startswith("api/"):
@@ -68,6 +76,8 @@ def montar(app: FastAPI) -> bool:
             arquivo = (DIST / caminho).resolve()
             if arquivo.is_file() and DIST in arquivo.parents:
                 return FileResponse(arquivo)
+            if _CARA_DE_ARQUIVO.search(caminho) or "\\" in caminho:
+                raise HTTPException(404, detail={"message": "Não encontrado"})
         # Qualquer outra rota (/, /login, /contatos...) é a própria tela: o React decide o que mostrar.
         return HTMLResponse(
             index.read_text(encoding="utf-8"),

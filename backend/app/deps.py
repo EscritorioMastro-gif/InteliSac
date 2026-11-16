@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .models import User
-from .security import decode_token
+from .security import decode_token, versao_confere
 
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -15,6 +15,8 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, data["sub"])
     if not user or user.archived_at is not None:
         raise HTTPException(401, detail={"message": "Usuário inativo"})
+    if not versao_confere(data, user):
+        raise HTTPException(401, detail={"message": "Sessão encerrada. Entre de novo."})
     return user
 
 

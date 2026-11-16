@@ -46,7 +46,7 @@ class Settings:
     database_url: str = _database_url()
     jwt_secret: str = os.getenv("JWT_SECRET", JWT_PADRAO)
     access_token_minutes: int = int(os.getenv("ACCESS_TOKEN_MINUTES", "60"))
-    refresh_token_days: int = int(os.getenv("REFRESH_TOKEN_DAYS", "30"))
+    refresh_token_days: int = int(os.getenv("REFRESH_TOKEN_DAYS", "7"))
     cors_origins: list[str] = [
         o.strip().rstrip("/") for o in (os.getenv("CORS_ORIGINS") or _cors_padrao()).split(",") if o.strip()
     ]

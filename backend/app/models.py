@@ -129,6 +129,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(300), default="")
     auth_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Sobe a cada "Sair" ou troca de senha: os logins emitidos antes deixam de valer.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(20), default="offline")  # online | away | offline
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -23,7 +23,7 @@ def _login(client, email, password):
 # ---------- login ----------
 
 def test_muitas_senhas_erradas_bloqueiam_o_email(client):
-    for _ in range(10):
+    for _ in range(8):
         assert _login(client, "admin@teste.local", "errada").status_code == 401
     r = _login(client, "admin@teste.local", "errada")
     assert r.status_code == 429 and int(r.headers["Retry-After"]) > 0
@@ -32,7 +32,7 @@ def test_muitas_senhas_erradas_bloqueiam_o_email(client):
 
 
 def test_muitas_senhas_erradas_do_mesmo_ip(client):
-    for i in range(30):
+    for i in range(20):
         assert _login(client, f"alguem{i}@teste.local", "errada").status_code == 401
     assert _login(client, "admin@teste.local", "senha-de-teste-123").status_code == 429
 
@@ -172,9 +172,9 @@ def test_tempo_real_derruba_token_vencido_e_usuario_arquivado(client, auth, sock
     duda = r.json()["id"]
     uid, _acc = _admin_id()
     realtime._conexoes.update({
-        "vencido": (uid, time.time() - 5),
-        "valido": (uid, time.time() + 3600),
-        "da-duda": (duda, time.time() + 3600),
+        "vencido": (uid, time.time() - 5, 0),
+        "valido": (uid, time.time() + 3600, 0),
+        "da-duda": (duda, time.time() + 3600, 0),
     })
     client.post(f"{API}/users/{duda}/archive", json={}, headers=auth)
     assert asyncio.run(realtime.desconectar_vencidos()) == 2

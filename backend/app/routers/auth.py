@@ -6,20 +6,38 @@ usuário ativo do InteliSac. Não vale só o e-mail igual: o cadastro público d
 qualquer pessoa criar uma conta com o e-mail de um colaborador ainda não vinculado.
 Usuários antigos com senha local (ex.: o admin criado pelo seed) continuam entrando pela senha local.
 
-Senha errada demais (30 por IP em 5 min, ou 10 no mesmo e-mail em 15 min) → 429 por alguns minutos.
+Senha errada demais → 429 por alguns minutos:
+  - 8 erros do mesmo e-mail vindos do mesmo IP em 15 min (alguém chutando a senha de uma pessoa);
+  - 20 erros do mesmo IP em 5 min (alguém testando vários e-mails);
+  - 50 erros no mesmo e-mail em 15 min, de qualquer IP (ataque espalhado).
+O bloqueio por e-mail+IP não tranca o dono da conta: quem ataca de fora não bloqueia o login
+dele no escritório.
+
+POST /oauth/revoke ("Sair"): encerra TODOS os logins do usuário (sobe users.token_version).
 """
+
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .. import supabase_auth
 from ..config import settings
-from ..protecao import ip_do_cliente, login_por_email, login_por_ip
+from .. import realtime
 from ..db import get_db
+from ..deps import current_user
 from ..models import User
-from ..security import create_tokens, decode_token, verify_password
+from ..protecao import ip_do_cliente, login_por_email, login_por_email_ip, login_por_ip
+from ..security import create_tokens, decode_token, verify_password, versao_confere
 
 router = APIRouter(tags=["auth"])
+log = logging.getLogger("intelisac.acesso")
+
+
+def _mascara(email: str) -> str:
+    """E-mail no registro sem expor inteiro: ga***@dominio.com"""
+    nome, _, dominio = email.partition("@")
+    return f"{nome[:2]}***@{dominio}" if dominio else f"{email[:2]}***"
 
 INVALID = {"error": "invalid_grant", "message": "E-mail ou senha inválidos"}
 
@@ -97,32 +115,44 @@ async def token(request: Request, db: Session = Depends(get_db)):
         email = str(form.get("username") or "").strip().lower()[:200]
         password = str(form.get("password") or "")[:200]
         ip = ip_do_cliente(request)
-        espera = max(login_por_ip.espera(ip), login_por_email.espera(email))
+        par = f"{email}|{ip}"
+        espera = max(login_por_ip.espera(ip), login_por_email_ip.espera(par), login_por_email.espera(email))
         if espera:
+            log.warning("login BLOQUEADO (muitas tentativas) email=%s ip=%s", _mascara(email), ip)
             raise _bloqueado(espera)
         if not email or not password:
             raise HTTPException(401, detail=INVALID)
         try:
             user = await _password_login(db, email, password)
         except HTTPException as e:
+            if e.status_code in (401, 403):
+                log.warning("login recusado (%s) email=%s ip=%s", e.status_code, _mascara(email), ip)
             if e.status_code == 401:
                 login_por_ip.falhou(ip)
+                login_por_email_ip.falhou(par)
                 login_por_email.falhou(email)
             raise
-        login_por_email.zera(email)
-        return create_tokens(user.id, user.account_id)
+        login_por_email_ip.zera(par)
+        log.info("login ok usuario=%s ip=%s", user.id, ip)
+        return create_tokens(user.id, user.account_id, user.token_version)
 
     if grant == "refresh_token":
         data = decode_token(str(form.get("refresh_token") or ""), expected_type="refresh")
         user = db.get(User, data["sub"]) if data else None
-        if not user or user.archived_at is not None:
+        if not user or user.archived_at is not None or not versao_confere(data, user):
             raise HTTPException(401, detail={"error": "invalid_grant", "message": "Sessão expirada"})
-        return create_tokens(user.id, user.account_id)
+        return create_tokens(user.id, user.account_id, user.token_version)
 
     raise HTTPException(400, detail={"error": "unsupported_grant_type"})
 
 
 @router.post("/oauth/revoke")
-def revoke():
-    # JWT sem estado: o cliente descarta os tokens. (Lista de revogação fica para depois.)
+async def revoke(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Sair: os logins deste usuário (em qualquer aparelho) deixam de valer na hora."""
+    user.token_version = int(user.token_version or 0) + 1
+    user.status = "offline"
+    db.commit()
+    log.info("saiu usuario=%s ip=%s", user.id, ip_do_cliente(request))
+    await realtime.derrubar_usuario(user.id)
+    await realtime.emit(user.account_id, "user.updated", user.to_dict())
     return True

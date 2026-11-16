@@ -7,7 +7,7 @@ from ..db import get_db
 from ..deps import current_user
 from ..models import Account, User
 from ..realtime import emit
-from ..security import hash_password, verify_password
+from ..security import create_tokens, hash_password, verify_password
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -30,7 +30,8 @@ def my_account(user: User = Depends(current_user), db: Session = Depends(get_db)
 @router.put("")
 async def update_me(body: dict = Body(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
     if "name" in body and body["name"]:
-        user.name = body["name"]
+        user.name = str(body["name"])[:200]
+    trocou_senha = False
     if body.get("password"):
         if len(body["password"]) < 8:
             raise HTTPException(422, detail={"message": "A senha precisa ter pelo menos 8 caracteres"})
@@ -46,9 +47,15 @@ async def update_me(body: dict = Body(...), user: User = Depends(current_user), 
             if not verify_password(body.get("currentPassword") or "", user.password_hash or ""):
                 raise HTTPException(422, detail={"message": "Senha atual incorreta"})
             user.password_hash = hash_password(body["password"])
+        trocou_senha = True
+        user.token_version = int(user.token_version or 0) + 1  # os logins antigos deixam de valer
     db.commit()
     await emit(user.account_id, "user.updated", user.to_dict())
-    return user.to_dict()
+    data = user.to_dict()
+    if trocou_senha:
+        # quem trocou continua logado neste aparelho, com tokens novos
+        data["tokens"] = create_tokens(user.id, user.account_id, user.token_version)
+    return data
 
 
 @router.put("/status")

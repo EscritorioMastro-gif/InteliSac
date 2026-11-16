@@ -22,7 +22,7 @@ from ..config import settings
 from ..db import get_db
 from ..deps import admin_user, current_user
 from ..models import Contact, Message, Service, User, iso, now
-from ..realtime import emit
+from ..realtime import emit, emit_service
 
 router = APIRouter(tags=["whatsapp"])
 
@@ -62,7 +62,7 @@ async def gateway_events(
     if ev.get("type") == "status":
         _apply_status(service, ev)
         db.commit()
-        await emit(service.account_id, "service.updated", service.to_dict())
+        await emit_service(service)
         return {"ok": True}
 
     if ev.get("type") == "ack":
@@ -231,12 +231,12 @@ async def logout_service(service_id: str, db: Session = Depends(get_db), user: U
         raise HTTPException(e.status if e.status < 500 else 503, detail={"message": str(e)})
     _apply_status(service, {"status": "disconnected", "reason": "logged_out"})
     db.commit()
-    await emit(service.account_id, "service.updated", service.to_dict())
+    await emit_service(service)
     return service.to_dict()
 
 
 @router.get("/services/{service_id}/connection")
-async def connection_state(service_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+async def connection_state(service_id: str, db: Session = Depends(get_db), user: User = Depends(admin_user)):
     service = _get_whatsapp_service(db, user, service_id)
     try:
         return await gateway_request("GET", f"/sessions/{service.id}")

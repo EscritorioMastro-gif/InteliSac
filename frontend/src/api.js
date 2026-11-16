@@ -35,8 +35,25 @@ async function tokenRequest(fields) {
 export const login = (email, password) =>
   tokenRequest({ grant_type: "password", username: email, password });
 
-export function logout() {
+// Sair: avisa o servidor (os logins deste usuário deixam de valer em qualquer aparelho) e limpa o navegador.
+export async function logout() {
+  const t = getTokens();
   setTokens(null);
+  if (!t?.access_token) return;
+  try {
+    await fetch(`${BASE}/oauth/revoke`, { method: "POST", headers: { Authorization: `Bearer ${t.access_token}` } });
+  } catch {
+    /* sem internet: o navegador já esqueceu o login */
+  }
+}
+
+// Quando vence o token de acesso (segundos desde 1970), lido de dentro do próprio token.
+function venceEm(token) {
+  try {
+    return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).exp || 0;
+  } catch {
+    return 0;
+  }
 }
 
 let refreshing = null;
@@ -74,6 +91,12 @@ export async function api(path, { method = "GET", body, params } = {}, retry = t
 
 // Envio de arquivo (multipart). Mesmo esquema de token/renovação do api().
 export async function apiForm(path, formData, retry = true) {
+  // O servidor confere o login ANTES de receber o arquivo: renova aqui se estiver para vencer,
+  // para o envio não ser recusado no meio do caminho.
+  const atual = getTokens();
+  if (retry && atual?.refresh_token && venceEm(atual.access_token) * 1000 < Date.now() + 60000) {
+    await refresh().catch(() => {});
+  }
   const headers = {};
   const t = getTokens();
   if (t?.access_token) headers.Authorization = `Bearer ${t.access_token}`;

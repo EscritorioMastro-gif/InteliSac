@@ -34,7 +34,10 @@ def make_crud_router(
     admin_write: bool = True,
     before_save: Hook | None = None,
     order_by=None,
+    public: Callable[[dict], dict] | None = None,
 ) -> APIRouter:
+    """`public`: tira do recurso o que só administrador pode ver (ex.: QR code da conexão).
+    Vale para as respostas a quem não é admin e para os eventos de tempo real (vão para todos)."""
     router = APIRouter(prefix=path, tags=[path.strip("/")])
     archivable = hasattr(model, "archived_at")
 
@@ -46,6 +49,12 @@ def make_crud_router(
         if not obj:
             raise HTTPException(404, detail={"message": "Não encontrado"})
         return obj
+
+    def _ver(data: dict, user: User) -> dict:
+        return data if public is None or user.is_admin else public(data)
+
+    def _evento(data: dict) -> dict:
+        return data if public is None else public(data)
 
     def _check_write(user: User):
         if admin_write and not user.is_admin:
@@ -73,7 +82,9 @@ def make_crud_router(
         if q and search:
             query = query.filter(getattr(model, search).ilike(f"%{q}%"))
         query = query.order_by(order_by if order_by is not None else model.created_at.desc())
-        return paginate(query, page, perPage)
+        pagina = paginate(query, page, perPage)
+        pagina["data"] = [_ver(d, user) for d in pagina["data"]]
+        return pagina
 
     @router.get("/count")
     def count_items(db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -84,7 +95,7 @@ def make_crud_router(
 
     @router.get("/{item_id}")
     def get_item(item_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-        return _get(db, user, item_id).to_dict()
+        return _ver(_get(db, user, item_id).to_dict(), user)
 
     @router.post("", status_code=201)
     async def create_item(
@@ -100,7 +111,7 @@ def make_crud_router(
         db.commit()
         db.refresh(obj)
         data = obj.to_dict()
-        await emit(user.account_id, f"{event}.created", data)
+        await emit(user.account_id, f"{event}.created", _evento(data))
         return data
 
     @router.put("/{item_id}")
@@ -116,7 +127,7 @@ def make_crud_router(
         db.commit()
         db.refresh(obj)
         data = obj.to_dict()
-        await emit(user.account_id, f"{event}.updated", data)
+        await emit(user.account_id, f"{event}.updated", _evento(data))
         return data
 
     @router.delete("/{item_id}")
@@ -126,7 +137,7 @@ def make_crud_router(
         data = obj.to_dict()
         db.delete(obj)
         db.commit()
-        await emit(user.account_id, f"{event}.destroyed", data)
+        await emit(user.account_id, f"{event}.destroyed", _evento(data))
         return True
 
     if archivable:
@@ -143,7 +154,7 @@ def make_crud_router(
             obj.archived_at = None if body.get("archive") is False else now()
             db.commit()
             data = obj.to_dict()
-            await emit(user.account_id, f"{event}.updated", data)
+            await emit(user.account_id, f"{event}.updated", _evento(data))
             return data
 
     return router

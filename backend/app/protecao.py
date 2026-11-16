@@ -1,10 +1,13 @@
 """Proteções da API para ficar na internet.
 
-- limite de tentativas de login (por IP e por e-mail), em memória;
-- teto de tamanho do corpo das requisições (antes de ler tudo na memória);
+- limite de tentativas de login (por IP, por e-mail+IP e por e-mail), em memória;
+- teto de tamanho do corpo das requisições (antes de ler tudo na memória) e, nas duas rotas que
+  aceitam corpo grande, conferência do acesso ANTES de ler o corpo (sem isso, qualquer um na
+  internet poderia mandar arquivos enormes sem login só para ocupar a memória do servidor);
 - cabeçalhos de segurança em todas as respostas.
 """
 
+import hmac
 import threading
 import time
 from collections import deque
@@ -12,6 +15,7 @@ from collections import deque
 from starlette.requests import Request
 
 from .config import settings
+from .security import decode_token
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +77,10 @@ class Limite:
             self._falhas.clear()
 
 
-# 30 senhas erradas do mesmo IP em 5 min, ou 10 no mesmo e-mail em 15 min → espera.
-login_por_ip = Limite(30, 5 * 60)
-login_por_email = Limite(10, 15 * 60)
+# Senha errada demais → espera (ver routers/auth.py):
+login_por_email_ip = Limite(8, 15 * 60)  # a mesma pessoa/IP chutando a senha de um e-mail
+login_por_ip = Limite(20, 5 * 60)  # um IP testando vários e-mails
+login_por_email = Limite(50, 15 * 60)  # um e-mail atacado a partir de muitos IPs
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +101,19 @@ def teto_para(path: str) -> int:
     return TETO_PADRAO
 
 
+def acesso_para_corpo_grande(path: str, headers: dict[bytes, bytes]) -> bool:
+    """Nas rotas de corpo grande, quem chama precisa provar o acesso no cabeçalho antes de mandar o corpo."""
+    if path.startswith("/api/v1/gateway/events"):
+        dado = headers.get(b"x-gateway-secret", b"")
+        segredo = settings.gateway_secret.encode()
+        return bool(segredo) and hmac.compare_digest(dado, segredo)
+    if path.startswith("/api/v1/messages/media"):
+        valor = headers.get(b"authorization", b"").decode("latin-1")
+        token = valor[7:] if valor.lower().startswith("bearer ") else ""
+        return decode_token(token) is not None  # assinatura e validade; o resto a rota confere
+    return True
+
+
 class CorpoGrandeDemais(Exception):
     pass
 
@@ -107,14 +125,16 @@ class LimiteDeCorpo:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        teto = teto_para(scope.get("path", ""))
-        for nome, valor in scope.get("headers", []):
-            if nome == b"content-length":
-                try:
-                    if int(valor) > teto:
-                        return await _responde_413(send, teto)
-                except ValueError:
-                    pass
+        path = scope.get("path", "")
+        teto = teto_para(path)
+        headers = dict(scope.get("headers", []))
+        if teto > TETO_PADRAO and scope.get("method") == "POST" and not acesso_para_corpo_grande(path, headers):
+            return await _responde(send, 401, '{"detail":{"message":"Token inválido ou expirado"}}')
+        try:
+            if int(headers.get(b"content-length", b"0")) > teto:
+                return await _responde_413(send, teto)
+        except ValueError:
+            pass
         recebido = 0
         respondeu = False
 
@@ -140,14 +160,18 @@ class LimiteDeCorpo:
                 await _responde_413(send, teto)
 
 
-async def _responde_413(send, teto: int):
-    corpo = ('{"detail":{"message":"Arquivo ou requisição maior que %d MB"}}' % (teto // MB)).encode()
+async def _responde(send, status: int, texto: str):
+    corpo = texto.encode()
     await send({
         "type": "http.response.start",
-        "status": 413,
-        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(corpo)).encode())],
+        "status": status,
+        "headers": [(b"content-type", b"application/json; charset=utf-8"), (b"content-length", str(len(corpo)).encode())],
     })
     await send({"type": "http.response.body", "body": corpo})
+
+
+async def _responde_413(send, teto: int):
+    await _responde(send, 413, '{"detail":{"message":"Arquivo ou requisição maior que %d MB"}}' % (teto // MB))
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +183,7 @@ CABECALHOS_API = [
     (b"referrer-policy", b"no-referrer"),
     (b"permissions-policy", b"camera=(), geolocation=(), microphone=(self)"),
     (b"cache-control", b"no-store"),
+    (b"x-robots-tag", b"noindex, nofollow"),  # o Google não lista o endereço do sistema
     (b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"),
 ]
 HSTS = (b"strict-transport-security", b"max-age=31536000")

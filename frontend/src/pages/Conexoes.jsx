@@ -47,12 +47,26 @@ export default function Conexoes() {
   useEffect(() => {
     carregar();
     const s = getSocket();
-    const onUpd = (svc) => setItens((prev) => (prev.some((x) => x.id === svc.id) ? prev.map((x) => (x.id === svc.id ? svc : x)) : [...prev, svc]));
+    // O estado da conexão chega para todos SEM o QR; o QR vem à parte, só para administradores.
+    const onUpd = (svc) =>
+      setItens((prev) =>
+        prev.some((x) => x.id === svc.id)
+          ? prev.map((x) => {
+              if (x.id !== svc.id) return x;
+              const qrCode = svc.data?.status === "qr" ? svc.data?.qrCode || x.data?.qrCode || null : null;
+              return { ...svc, data: { ...svc.data, qrCode } };
+            })
+          : [...prev, svc]
+      );
+    const onQr = ({ id, qrCode }) =>
+      setItens((prev) => prev.map((x) => (x.id === id ? { ...x, data: { ...x.data, qrCode: qrCode || null } } : x)));
     s.on("service.updated", onUpd);
     s.on("service.created", onUpd);
+    s.on("service.qr", onQr);
     return () => {
       s.off("service.updated", onUpd);
       s.off("service.created", onUpd);
+      s.off("service.qr", onQr);
     };
   }, [carregar]);
 

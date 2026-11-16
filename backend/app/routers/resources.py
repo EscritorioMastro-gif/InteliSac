@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from .. import supabase_auth
 from ..config import settings
 from ..crud import make_crud_router
+from ..realtime import service_publico
 from ..models import (
     SERVICE_TYPES,
     Department,
@@ -68,6 +69,8 @@ def _user_hook(db, obj: User, body: dict, actor: User, creating: bool):
         obj.password_hash = hash_password(password)
     elif creating:
         raise HTTPException(422, detail={"message": "Informe uma senha"})
+    if not creating and (password or email_changed):
+        obj.token_version = int(obj.token_version or 0) + 1  # senha/e-mail trocados: entra de novo
     if "departmentIds" in body:
         ids = body["departmentIds"] or []
         obj.departments = (
@@ -100,7 +103,8 @@ routers = [
     make_crud_router("/roles", Role, "role", {"name": "name", "permissions": "permissions"},
                      search="name", required=("name",), order_by=Role.name),
     make_crud_router("/services", Service, "service", {"name": "name", "type": "type"},
-                     search="name", required=("name", "type"), before_save=_service_hook, order_by=Service.name),
+                     search="name", required=("name", "type"), before_save=_service_hook, order_by=Service.name,
+                     public=service_publico),
     make_crud_router("/users", User, "user",
                      {"name": "name", "isAdmin": "is_admin", "roleId": "role_id", "status": "status"},
                      search="name", required=("name", "email"), before_save=_user_hook, order_by=User.name),
