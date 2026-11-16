@@ -9,7 +9,7 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import migrate, realtime, storage
+from . import migrate, realtime, storage, tela
 from .config import settings
 from .protecao import CabecalhosDeSeguranca, LimiteDeCorpo
 from .realtime import sio
@@ -67,6 +67,10 @@ for r in resources.routers:
 @app.get(API + "/health")
 def health():
     return {"ok": True, "app": "InteliSac"}
+
+
+# Tela (React montado em frontend/dist) no mesmo endereço — tem que vir depois das rotas da API.
+tela.montar(app)
 
 
 # App ASGI final: socket.io em /socket.io + FastAPI no resto (com teto de corpo e cabeçalhos de segurança).

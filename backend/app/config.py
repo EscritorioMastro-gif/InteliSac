@@ -17,6 +17,18 @@ def _database_url() -> str:
     return url
 
 
+def _com_http(url: str) -> str:
+    """O Render entrega o endereço interno como "nome:porta" (sem http://)."""
+    url = url.strip().rstrip("/")
+    return url if "://" in url or not url else f"http://{url}"
+
+
+def _cors_padrao() -> str:
+    # No Render a tela e a API ficam no mesmo endereço público (RENDER_EXTERNAL_URL).
+    externo = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    return externo or "http://localhost:5180,http://localhost:8010"
+
+
 def _flag(name: str, default: bool) -> bool:
     v = os.getenv(name)
     return default if v is None or v.strip() == "" else v.strip().lower() in ("1", "true", "sim", "yes", "on")
@@ -36,10 +48,10 @@ class Settings:
     access_token_minutes: int = int(os.getenv("ACCESS_TOKEN_MINUTES", "60"))
     refresh_token_days: int = int(os.getenv("REFRESH_TOKEN_DAYS", "30"))
     cors_origins: list[str] = [
-        o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5180").split(",") if o.strip()
+        o.strip().rstrip("/") for o in (os.getenv("CORS_ORIGINS") or _cors_padrao()).split(",") if o.strip()
     ]
     # Gateway do WhatsApp por QR code (pasta whatsapp-gateway/)
-    whatsapp_gateway_url: str = os.getenv("WHATSAPP_GATEWAY_URL", "http://127.0.0.1:8020").rstrip("/")
+    whatsapp_gateway_url: str = _com_http(os.getenv("WHATSAPP_GATEWAY_URL") or "http://127.0.0.1:8020")
     gateway_secret: str = os.getenv("GATEWAY_SECRET", "")
     # Supabase Auth: quando configurado, e-mail e senha dos usuários ficam no Supabase.
     supabase_url: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")

@@ -1,0 +1,98 @@
+# ==========================================================================
+# Render Blueprint — InteliSac no ar (2 serviços).
+#
+#   intelisac           tela + API + tempo real, num endereço só (https://intelisac.onrender.com)
+#   intelisac-whatsapp  conexão do WhatsApp (QR code). Serviço PRIVADO: sem endereço na
+#                       internet, só a API fala com ele. Disco de 1 GB guarda a sessão
+#                       (sem disco, cada publicação pediria para ler o QR de novo).
+#
+# Banco, arquivos e login ficam no Supabase (configurado à parte).
+#
+# Primeiro deploy: Render → New → Blueprint → este repositório. O Render pede só o que
+# está com `sync: false` (endereço do banco e chaves do Supabase). Os segredos (JWT e
+# API↔WhatsApp) são gerados pelo próprio Render.
+#
+# Publicar depois: Manual Deploy em cada serviço (autoDeployTrigger: off). As migrações
+# do banco rodam sozinhas quando a API liga.
+#
+# Região: o Render não tem São Paulo; Virginia é a mais perto do banco (Supabase em SP).
+# ==========================================================================
+
+envVarGroups:
+  - name: intelisac-segredo
+    envVars:
+      # segredo compartilhado API ↔ WhatsApp (cabeçalho X-Gateway-Secret)
+      - key: GATEWAY_SECRET
+        generateValue: true
+
+services:
+  # ------------------------------------------------------------------------
+  # Tela + API (Python/FastAPI). O build também monta a tela React (frontend/dist).
+  # ------------------------------------------------------------------------
+  - type: web
+    name: intelisac
+    runtime: python
+    plan: 0.5c-512mb   # 0,5 CPU · 512 MB (o antigo "Starter", US$ 7/mês)
+    region: virginia
+    buildCommand: bash render-build.sh
+    startCommand: cd backend && uvicorn app.main:asgi --host 0.0.0.0 --port $PORT --no-server-header --proxy-headers
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: "off"
+    envVars:
+      # Versão do Python: arquivo .python-version (3.13). Node do build: NODE_VERSION.
+      - key: NODE_VERSION
+        value: 24.19.0
+      # aceita o endereço/https informado pelo proxy do Render (só ele chega no serviço)
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+      # assina o login do InteliSac (gerado pelo Render)
+      - key: JWT_SECRET
+        generateValue: true
+      # Supabase → Connect → Session pooler (porta 5432), com a senha do banco
+      - key: DATABASE_URL
+        sync: false
+      # Supabase → Project Settings → API: Project URL, publishable e secret
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # endereço interno do serviço do WhatsApp ("nome:porta")
+      - key: WHATSAPP_GATEWAY_URL
+        fromService:
+          type: pserv
+          name: intelisac-whatsapp
+          property: hostport
+      - fromGroup: intelisac-segredo
+
+  # ------------------------------------------------------------------------
+  # WhatsApp (Node + Baileys) — whatsapp-gateway/. Uma instância só (o disco garante).
+  # ------------------------------------------------------------------------
+  - type: pserv
+    name: intelisac-whatsapp
+    runtime: node
+    plan: 0.5c-512mb   # 0,5 CPU · 512 MB (o antigo "Starter", US$ 7/mês)
+    region: virginia
+    rootDir: whatsapp-gateway
+    buildCommand: npm ci
+    startCommand: node server.js
+    autoDeployTrigger: "off"
+    disk:
+      name: sessao-whatsapp
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: HOST
+        value: 0.0.0.0
+      - key: SESSIONS_DIR
+        value: /var/data/sessions
+      # endereço interno da API ("nome:porta")
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: intelisac
+          property: hostport
+      - fromGroup: intelisac-segredo

@@ -29,7 +29,11 @@ const {
 } = baileys;
 
 const PORT = Number(process.env.PORT || 8020);
-const BACKEND_URL = (process.env.BACKEND_URL || "http://127.0.0.1:8010").replace(/\/$/, "");
+// No PC só a própria máquina acessa (127.0.0.1). No Render: HOST=0.0.0.0 (rede interna, sem endereço público).
+const HOST = process.env.HOST || "127.0.0.1";
+// O Render entrega o endereço interno da API como "nome:porta" (sem http://)
+const comHttp = (u) => (u.includes("://") ? u : `http://${u}`);
+const BACKEND_URL = comHttp(process.env.BACKEND_URL || "http://127.0.0.1:8010").replace(/\/$/, "");
 const SECRET = process.env.GATEWAY_SECRET || "";
 const SESSIONS_DIR = path.resolve(process.env.SESSIONS_DIR || "./sessions");
 const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
@@ -495,7 +499,7 @@ async function logout(s) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP (só escuta em 127.0.0.1; o backend é o único cliente)
+// HTTP (o backend é o único cliente; exige o X-Gateway-Secret)
 // ---------------------------------------------------------------------------
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -582,8 +586,8 @@ async function restoreSessions() {
   }
 }
 
-server.listen(PORT, "127.0.0.1", async () => {
-  log(`gateway WhatsApp ouvindo em http://127.0.0.1:${PORT} (backend: ${BACKEND_URL})`);
+server.listen(PORT, HOST, async () => {
+  log(`gateway WhatsApp ouvindo em http://${HOST}:${PORT} (backend: ${BACKEND_URL})`);
   await restoreSessions();
 });
 

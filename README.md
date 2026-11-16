@@ -120,6 +120,36 @@ Base `http://localhost:8010/api/v1` — documentação interativa em `http://loc
 Eventos socket.io (`/socket.io`, `?access_token=`): `message.created`, `ticket.created`,
 `ticket.updated`, `message.updated` (✓✓, apagada), `contact.created/updated/destroyed`, `service.updated` (status/QR do WhatsApp)…
 
+## Publicar no Render
+
+O `render.yaml` cria **2 serviços** (região Virginia, plano `0.5c-512mb` = 0,5 CPU · 512 MB, US$ 7/mês cada):
+
+| Serviço | O que é | Endereço |
+|---|---|---|
+| `intelisac` | tela + API + tempo real (o build monta o React em `frontend/dist` e a API entrega) | `https://intelisac.onrender.com` (ou com sufixo, se o nome estiver ocupado) |
+| `intelisac-whatsapp` | conexão do WhatsApp, **privado** (sem endereço na internet) + disco de 1 GB com a sessão | só na rede interna do Render |
+
+Banco, arquivos e login continuam no Supabase.
+
+**Primeira vez**
+
+1. Render → **New → Blueprint** → escolha o repositório `InteliSac` (libere o acesso do Render a ele no GitHub, se pedir).
+2. O Render pede 4 valores — copie do `backend/.env` do PC (mesmos nomes):
+   `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+   Os segredos `JWT_SECRET` e `GATEWAY_SECRET` o Render gera sozinho.
+3. **Apply**. O primeiro build leva alguns minutos. As migrações do banco rodam quando a API liga.
+4. Troca do WhatsApp do PC para o Render (o WhatsApp só pode rodar num lugar):
+   1. no InteliSac do **PC**: Conexões → **Desconectar** (tira o aparelho do PC do celular);
+   2. feche o InteliSac do PC (os 3 servidores);
+   3. no InteliSac do **Render**: Conexões → **Conectar** → leia o QR no celular.
+
+**Atualizar depois:** commit + push no GitHub e **Manual Deploy** nos 2 serviços
+(`autoDeployTrigger: off`: nada vai para o ar sem você mandar).
+
+**Segurança no ar:** a API não sobe com chave faltando/fraca (`JWT_SECRET`, `GATEWAY_SECRET`,
+Supabase, banco Postgres), `/docs` fica fechado, o Simulador fica desligado (`ENABLE_SIMULATOR`)
+e a tela sai com CSP (só scripts do próprio site; só conversa com a própria API e o Supabase).
+
 ## Próximos passos
 
 Levar as rotinas fiscais (NF-e, NFS, cobrança) do Digisac para a API do InteliSac.
