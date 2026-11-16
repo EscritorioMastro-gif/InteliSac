@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -170,6 +171,23 @@ class Tag(Base):
             "color": self.color,
             "createdAt": iso(self.created_at),
         }
+
+
+class CorretorConta(Base):
+    """Gasto do botão "Corrigir" (Claude) e o saldo da Anthropic informado pelo administrador.
+    A Anthropic não diz o saldo para o sistema: o InteliSac desconta do saldo informado o custo
+    de cada correção e avisa os administradores quando estiver acabando."""
+
+    __tablename__ = "corretor_conta"
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    mes: Mapped[str] = mapped_column(String(7), default="")  # "2026-11"
+    gasto_mes_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    correcoes_mes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    saldo_usd: Mapped[float | None] = mapped_column(Float, nullable=True)  # informado depois da recarga
+    saldo_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gasto_desde_saldo_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    aviso_abaixo_usd: Mapped[float] = mapped_column(Float, default=3.0, server_default="3")
+    sem_credito_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class QuickReply(Base):

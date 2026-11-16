@@ -30,6 +30,28 @@ class CorretorError(Exception):
     pass
 
 
+class SemCredito(CorretorError):
+    """O crédito da Anthropic acabou (ou chegou no limite de gasto)."""
+
+
+class ClaudeIndisponivel(CorretorError):
+    """Chave errada, limite de pedidos ou Anthropic fora do ar."""
+
+
+# US$ por milhão de tokens (entrada, saída) — tabela de preços da Anthropic de 2026-11
+PRECOS = {
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-opus-5-5": (4.0, 20.0),
+}
+
+
+def custo_usd(modelo: str, entrada: int, saida: int) -> float:
+    p_in, p_out = PRECOS.get(modelo) or PRECOS.get(settings.corretor_modelo) or PRECOS["claude-sonnet-5-5"]
+    return (entrada * p_in + saida * p_out) / 1_000_000
+
+
 def _sem_espacos(s: str) -> str:
     return re.sub(r"\s+", "", s)
 
@@ -87,15 +109,24 @@ def maiuscula_no_inicio(texto: str) -> tuple[str, int]:
     return _INICIO_DE_FRASE.sub(troca, texto), n
 
 
-async def corrigir(texto: str, client: httpx.AsyncClient | None = None) -> dict:
+async def corrigir(texto: str, client=None, lt_client: httpx.AsyncClient | None = None) -> dict:
+    """Devolve {"text", "corrections", "items"} e, quando usou o Claude, "uso" (tokens e custo).
+    Se o Claude não puder atender (sem crédito, chave errada, fora do ar), corrige com o
+    LanguageTool e devolve "aviso" + "problema" ("sem_credito" ou "indisponivel")."""
     texto = texto or ""
     if not texto.strip():
         return {"text": texto, "corrections": 0, "items": []}
     if len(texto) > MAX_CARACTERES:
         raise CorretorError(f"Texto grande demais para corrigir (máximo {MAX_CARACTERES} caracteres)")
-    if settings.anthropic_api_key:
+    if not settings.anthropic_api_key:
+        return await _com_languagetool(texto, client)
+    try:
         return await _com_claude(texto, client)
-    return await _com_languagetool(texto, client)
+    except (SemCredito, ClaudeIndisponivel) as e:
+        r = await _com_languagetool(texto, lt_client)
+        r["aviso"] = f"{e} Esta correção usou o corretor grátis, mais simples."
+        r["problema"] = "sem_credito" if isinstance(e, SemCredito) else "indisponivel"
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +157,7 @@ _cliente_claude: anthropic.AsyncAnthropic | None = None
 def _claude() -> anthropic.AsyncAnthropic:
     global _cliente_claude
     if _cliente_claude is None:  # um cliente só: reaproveita a conexão com a Anthropic
-        _cliente_claude = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=30.0, max_retries=2)
+        _cliente_claude = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=20.0, max_retries=1)
     return _cliente_claude
 
 
@@ -158,21 +189,26 @@ async def _com_claude(texto: str, client: anthropic.AsyncAnthropic | None = None
             fallbacks="default",
         )
     except anthropic.AuthenticationError as e:
-        raise CorretorError("A chave da Anthropic (ANTHROPIC_API_KEY) está errada ou foi apagada.") from e
+        log.warning("corretor: chave da Anthropic recusada")
+        raise ClaudeIndisponivel("A chave da Anthropic (ANTHROPIC_API_KEY) está errada ou foi apagada.") from e
     except anthropic.PermissionDeniedError as e:
-        raise CorretorError("A chave da Anthropic não tem permissão para usar o corretor.") from e
+        raise ClaudeIndisponivel("A chave da Anthropic não tem permissão para usar o corretor.") from e
     except anthropic.RateLimitError as e:
-        raise CorretorError("Muitas correções ao mesmo tempo. Espere alguns segundos e tente de novo.") from e
+        raise ClaudeIndisponivel("Muitas correções ao mesmo tempo no Claude.") from e
     except anthropic.BadRequestError as e:
-        if "credit" in str(e.message).lower() or "limit" in str(e.message).lower():
-            raise CorretorError("Acabou o crédito da Anthropic (ou chegou no limite de gasto). Veja em console.anthropic.com.") from e
+        msg = str(e.message).lower()
+        if "credit" in msg or "billing" in msg or "spend" in msg or "limit" in msg:
+            log.warning("corretor: sem crédito na Anthropic (%s)", e.message)
+            raise SemCredito("Acabou o crédito da Anthropic (ou chegou no limite de gasto).") from e
         log.warning("corretor recusou o pedido: %s", e.message)
         raise CorretorError("O corretor (Claude) recusou o pedido. Tente de novo.") from e
     except anthropic.APIStatusError as e:
+        if e.status_code == 402:
+            raise SemCredito("Acabou o crédito da Anthropic (ou chegou no limite de gasto).") from e
         log.warning("corretor fora do ar: %s %s", e.status_code, e.message)
-        raise CorretorError("O corretor (Claude) está fora do ar agora. Tente de novo em instantes.") from e
+        raise ClaudeIndisponivel("O Claude está fora do ar agora.") from e
     except anthropic.APIConnectionError as e:
-        raise CorretorError("O corretor (Claude) não respondeu. Tente de novo.") from e
+        raise ClaudeIndisponivel("O Claude não respondeu.") from e
 
     if r.stop_reason == "refusal":
         raise CorretorError("O corretor não quis revisar este texto.")
@@ -195,11 +231,13 @@ async def _com_claude(texto: str, client: anthropic.AsyncAnthropic | None = None
     fim = texto[len(texto.rstrip()):]
     feitas = diferencas(nucleo, corrigido)
     uso = getattr(r, "usage", None)
-    log.info(
-        "correção com %s: %d trecho(s) mudado(s), tokens entrada=%s saída=%s",
-        r.model, len(feitas), getattr(uso, "input_tokens", "?"), getattr(uso, "output_tokens", "?"),
-    )
-    return {"text": inicio + corrigido + fim, "corrections": len(feitas), "items": feitas[:30]}
+    entrada, saida = int(getattr(uso, "input_tokens", 0) or 0), int(getattr(uso, "output_tokens", 0) or 0)
+    custo = custo_usd(r.model, entrada, saida)
+    log.info("correção com %s: %d trecho(s) mudado(s), tokens entrada=%d saída=%d, ~US$ %.5f", r.model, len(feitas), entrada, saida, custo)
+    return {
+        "text": inicio + corrigido + fim, "corrections": len(feitas), "items": feitas[:30],
+        "uso": {"model": r.model, "inputTokens": entrada, "outputTokens": saida, "costUsd": custo},
+    }
 
 
 # ---------------------------------------------------------------------------

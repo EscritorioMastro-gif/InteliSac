@@ -116,6 +116,11 @@ async def emit(account_id: str, event: str, payload: dict) -> None:
     await sio.emit(event, payload, room=f"account:{account_id}")
 
 
+async def emit_admins(account_id: str, event: str, payload: dict) -> None:
+    """Só para os administradores da conta (ex.: gasto e saldo do corretor)."""
+    await sio.emit(event, payload, room=f"admins:{account_id}")
+
+
 def service_publico(d: dict) -> dict:
     """Conexão sem o QR code (quem lê o QR liga um WhatsApp ao sistema: só administrador vê)."""
     data = dict(d.get("data") or {})

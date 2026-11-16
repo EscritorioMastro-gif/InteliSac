@@ -4,6 +4,7 @@ import { api, resource } from "../api";
 import { getSocket } from "../socket";
 import Modal from "../components/Modal";
 import Icon from "../components/Icon";
+import { dolares } from "../App";
 
 const TIPOS = [
   { value: "whatsapp", label: "WhatsApp (QR code)" },
@@ -132,6 +133,8 @@ export default function Conexoes() {
         </table>
       </div>
 
+      <CorretorQuadro />
+
       {qrDe && svcQr && (
         <Modal titulo={`Conectar WhatsApp — ${svcQr.name}`} onClose={() => setQrDe(null)}>
           {svcQr.data?.status === "connected" ? (
@@ -176,6 +179,102 @@ export default function Conexoes() {
         />
       )}
     </div>
+  );
+}
+
+// Botão "Corrigir" com o Claude: gasto do mês, saldo estimado e quando avisar
+function CorretorQuadro() {
+  const [st, setSt] = useState(null);
+  const [saldo, setSaldo] = useState("");
+  const [aviso, setAviso] = useState("");
+  const [msg, setMsg] = useState("");
+  const [erro, setErro] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    api("/text/correct/status")
+      .then((s) => {
+        setSt(s);
+        setAviso(String(s.alertBelowUsd ?? 3).replace(".", ","));
+      })
+      .catch((e) => setErro(e.message));
+    const so = getSocket();
+    so.on("corretor.updated", setSt);
+    return () => so.off("corretor.updated", setSt);
+  }, []);
+
+  const salvar = async (e) => {
+    e.preventDefault();
+    setSalvando(true);
+    setErro("");
+    setMsg("");
+    try {
+      const body = { alertBelowUsd: aviso };
+      if (saldo.trim()) body.balanceUsd = saldo;
+      const s = await api("/text/correct/status", { method: "PUT", body });
+      setSt(s);
+      setMsg(saldo.trim() ? "Saldo registrado. O gasto das correções passa a ser descontado a partir de agora." : "Aviso atualizado.");
+      setSaldo("");
+    } catch (err) {
+      setErro(err.message);
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  if (!st) return erro ? <div className="error">{erro}</div> : null;
+  const claude = st.provider === "claude";
+  const situacao = st.alert === "sem_credito" ? "o crédito acabou" : st.alert === "saldo_baixo" ? "saldo acabando" : st.estimatedBalanceUsd == null ? "saldo não informado" : "tudo certo";
+  return (
+    <section className="panel-box">
+      <div className="panel-box-head">
+        <Icon name="wand" />
+        <h3>Corretor de texto (botão Corrigir)</h3>
+        <span className={`status ${claude ? (st.alert ? "warn" : "ok") : "off"}`}>{claude ? `Claude · ${st.model}` : "LanguageTool grátis"}</span>
+      </div>
+      {!claude ? (
+        <p className="muted">Para usar o Claude, coloque a chave <b>ANTHROPIC_API_KEY</b> no Environment do serviço <b>intelisac</b> no Render.</p>
+      ) : (
+        <>
+          <div className="stats">
+            <div>
+              <span>Gasto neste mês</span>
+              <strong>{dolares(st.monthCostUsd)}</strong>
+              <small>{st.monthCorrections} {st.monthCorrections === 1 ? "correção" : "correções"}</small>
+            </div>
+            <div>
+              <span>Saldo estimado na Anthropic</span>
+              <strong>{st.estimatedBalanceUsd == null ? "—" : dolares(st.estimatedBalanceUsd)}</strong>
+              <small>{st.balanceAt ? `informado ${dolares(st.balanceUsd)} em ${new Date(st.balanceAt).toLocaleDateString("pt-BR")}` : "informe o saldo abaixo"}</small>
+            </div>
+            <div className={st.alert ? "warn" : ""}>
+              <span>Avisar abaixo de</span>
+              <strong>{dolares(st.alertBelowUsd)}</strong>
+              <small>{situacao}</small>
+            </div>
+          </div>
+          <form className="saldo-form" onSubmit={salvar}>
+            <label>
+              Saldo atual na Anthropic (US$)
+              <input inputMode="decimal" placeholder="Ex.: 20,00" value={saldo} onChange={(e) => setSaldo(e.target.value)} />
+            </label>
+            <label>
+              Avisar quando ficar abaixo de (US$)
+              <input inputMode="decimal" value={aviso} onChange={(e) => setAviso(e.target.value)} />
+            </label>
+            <button className="primary" disabled={salvando}>{salvando ? "Salvando…" : "Salvar"}</button>
+          </form>
+          {msg && <div className="ok-msg">{msg}</div>}
+          <p className="muted small">
+            A Anthropic não informa o saldo para o InteliSac. Depois de cada recarga, copie o saldo que aparece em
+            console.anthropic.com → Billing e salve aqui: o InteliSac desconta o custo de cada correção (estimativa, pode
+            variar alguns centavos) e avisa os administradores quando estiver acabando. Para nunca ficar sem, ligue a
+            recarga automática (auto-reload) no Billing da Anthropic.
+          </p>
+        </>
+      )}
+      {erro && <div className="error">{erro}</div>}
+    </section>
   );
 }
 

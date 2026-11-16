@@ -62,6 +62,31 @@ function useSocketOnline() {
   return online;
 }
 
+// Administradores: crédito do botão Corrigir (Claude). Atualiza ao entrar, a cada 30 min e na hora
+// em que o servidor avisa (saldo acabando, crédito acabou, saldo novo informado).
+function useCorretorAdmin(me) {
+  const [estado, setEstado] = useState(null);
+  const [dispensado, setDispensado] = useState(null);
+  const admin = !!me?.isAdmin;
+  useEffect(() => {
+    if (!admin) return undefined;
+    const carregar = () => api("/text/correct/status").then(setEstado).catch(() => {});
+    carregar();
+    const t = setInterval(carregar, 30 * 60 * 1000);
+    const s = getSocket();
+    s.on("corretor.updated", setEstado);
+    return () => {
+      clearInterval(t);
+      s.off("corretor.updated", setEstado);
+    };
+  }, [admin]);
+  // "Agora não" esconde o aviso até ele mudar (ex.: de "acabando" para "acabou")
+  const alerta = estado?.alert && dispensado !== estado.alert ? estado.alert : null;
+  return { estado, alerta, dispensar: () => setDispensado(estado?.alert) };
+}
+
+export const dolares = (v) => `US$ ${(Number(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 function Layout() {
   const [me, setMe] = useState(null);
   const [erro, setErro] = useState("");
@@ -69,6 +94,7 @@ function Layout() {
   const online = useSocketOnline();
   const toast = useToast();
   const avisos = useAvisos(me);
+  const corretor = useCorretorAdmin(me);
 
   const alternarNotificacao = async () => {
     const r = await avisos.alternarNotificacao();
@@ -180,6 +206,20 @@ function Layout() {
               <span className="grow">Quer ser avisado quando chegar mensagem, mesmo com o InteliSac minimizado?</span>
               <button className="primary small-btn" onClick={alternarNotificacao}>Ativar notificações</button>
               <button className="small-btn" onClick={avisos.dispensarConvite}>Agora não</button>
+            </div>
+          )}
+          {corretor.alerta && (
+            <div className="conn-banner credit-banner" role="alert">
+              <Icon name="wand" size={16} />
+              <span className="grow">
+                {corretor.alerta === "sem_credito"
+                  ? "O crédito da Anthropic acabou: o botão Corrigir está usando o corretor grátis, mais simples."
+                  : `O crédito do botão Corrigir (Claude) está acabando: restam cerca de ${dolares(corretor.estado?.estimatedBalanceUsd)}.`}{" "}
+                Recarregue na Anthropic e depois informe o saldo novo em Conexões.
+              </span>
+              <a className="btn-link small-btn" href="https://console.anthropic.com/" target="_blank" rel="noreferrer">Abrir a Anthropic</a>
+              <button className="small-btn" onClick={() => navigate("/conexoes")}>Informar saldo</button>
+              <button className="small-btn" onClick={corretor.dispensar}>Agora não</button>
             </div>
           )}
           <Routes>

@@ -388,6 +388,7 @@ export default function Atendimento() {
     setCorrigindo(true);
     try {
       const r = await api("/text/correct", { method: "POST", body: { text: original } });
+      if (r.aviso) toast.show(r.aviso, "error"); // ex.: crédito acabou e esta correção usou o corretor grátis
       if (!r.corrections || r.text === original) {
         setCorrecao(null);
         toast.show("Nenhuma correção: o texto parece certo");

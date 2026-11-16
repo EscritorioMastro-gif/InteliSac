@@ -396,12 +396,80 @@ def test_corrigir_com_claude_protege_o_texto_e_explica_os_erros(monkeypatch):
     cliente, _ = _claude_falso("x", stop="refusal")
     with pytest.raises(corretor.CorretorError, match="não quis"):
         asyncio.run(corretor.corrigir(texto, client=cliente))
+
+    # sem crédito, chave errada ou Anthropic fora do ar: o botão continua funcionando com o LanguageTool
+    async def rodar(cliente):
+        lt = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"matches": [
+            _m(texto, "voce", "você", regra="PT_SIMPLE_REPLACE_ORTHOGRAPHY_VOCE")]})))
+        async with lt:
+            return await corretor.corrigir(texto, client=cliente, lt_client=lt)
+
+    cliente, _ = _claude_falso(status=400, erro={"type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API"})
+    r = asyncio.run(rodar(cliente))
+    assert r["text"] == "Você pode me mandar o boleto de novembro hoje?" and r["problema"] == "sem_credito"
+    assert "crédito" in r["aviso"] and "grátis" in r["aviso"] and "uso" not in r
     cliente, _ = _claude_falso(status=401, erro={"type": "authentication_error", "message": "invalid x-api-key"})
-    with pytest.raises(corretor.CorretorError, match="chave da Anthropic"):
-        asyncio.run(corretor.corrigir(texto, client=cliente))
-    cliente, _ = _claude_falso(status=400, erro={"type": "invalid_request_error", "message": "Your credit balance is too low"})
-    with pytest.raises(corretor.CorretorError, match="crédito"):
-        asyncio.run(corretor.corrigir(texto, client=cliente))
+    r = asyncio.run(rodar(cliente))
+    assert r["problema"] == "indisponivel" and "chave da Anthropic" in r["aviso"]
     cliente, _ = _claude_falso(status=529, erro={"type": "overloaded_error", "message": "Overloaded"})
-    with pytest.raises(corretor.CorretorError, match="fora do ar"):
-        asyncio.run(corretor.corrigir(texto, client=cliente))
+    assert "fora do ar" in asyncio.run(rodar(cliente))["aviso"]
+
+
+def test_custo_e_aviso_de_credito_para_administradores(client, auth, monkeypatch):
+    from app import realtime
+    from app.config import settings
+    from app.db import SessionLocal as S
+    from app.models import CorretorConta
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "chave-de-teste")
+    enviados = []
+
+    async def fake_emit(evento, payload, room=None):
+        enviados.append((evento, room, payload))
+
+    monkeypatch.setattr(realtime.sio, "emit", fake_emit)
+    # cada correção custa US$ 0,40 (de mentira) para o teste andar rápido
+    respostas = iter([{"text": "Ok.", "corrections": 1, "items": [], "uso": {"model": "claude-sonnet-5-5", "inputTokens": 1, "outputTokens": 1, "costUsd": 0.40}}] * 3)
+
+    async def fake(texto, client=None, lt_client=None):
+        return dict(next(respostas))
+
+    monkeypatch.setattr(corretor, "corrigir", fake)
+    s0 = client.get(f"{API}/text/correct/status", headers=auth).json()
+    assert s0["provider"] == "claude" and s0["model"] == "claude-sonnet-5-5" and s0["alert"] is None
+
+    # o administrador informa o saldo depois de recarregar e pede aviso abaixo de US$ 4,50
+    s1 = client.put(f"{API}/text/correct/status", json={"balanceUsd": "5,00", "alertBelowUsd": 4.5}, headers=auth).json()
+    assert s1["balanceUsd"] == 5.0 and s1["estimatedBalanceUsd"] == 5.0 and s1["alert"] is None
+    assert [e for e, sala, _p in enviados] == ["corretor.updated"] and enviados[0][1].startswith("admins:")
+    enviados.clear()
+
+    r = client.post(f"{API}/text/correct", json={"text": "ok"}, headers=auth).json()
+    assert r == {"text": "Ok.", "corrections": 1, "items": []}  # atendente não vê custo
+    assert not any(e == "corretor.updated" for e, _s, _p in enviados)  # 4,60: ainda acima do aviso
+    client.post(f"{API}/text/correct", json={"text": "ok"}, headers=auth)  # 4,20: abaixo de 4,50
+    avisos = [(sala, p) for e, sala, p in enviados if e == "corretor.updated"]
+    assert len(avisos) == 1 and avisos[0][0].startswith("admins:") and avisos[0][1]["alert"] == "saldo_baixo"
+    s2 = client.get(f"{API}/text/correct/status", headers=auth).json()
+    assert s2["monthCorrections"] == 2 and abs(s2["estimatedBalanceUsd"] - 4.2) < 1e-9 and abs(s2["monthCostUsd"] - 0.8) < 1e-9
+
+    # acabou o crédito: vira "sem_credito"; recarregar e informar o saldo novo limpa o aviso
+    async def sem_credito(texto, client=None, lt_client=None):
+        return {"text": texto, "corrections": 0, "items": [], "aviso": "Acabou o crédito...", "problema": "sem_credito"}
+
+    monkeypatch.setattr(corretor, "corrigir", sem_credito)
+    r = client.post(f"{API}/text/correct", json={"text": "ok"}, headers=auth).json()
+    assert r["aviso"].startswith("Acabou") and "problema" not in r
+    assert client.get(f"{API}/text/correct/status", headers=auth).json()["alert"] == "sem_credito"
+    s3 = client.put(f"{API}/text/correct/status", json={"balanceUsd": 20}, headers=auth).json()
+    assert s3["alert"] is None and s3["estimatedBalanceUsd"] == 20.0 and s3["noCreditSince"] is None
+
+    # atendente não vê nem mexe no saldo
+    client.post(f"{API}/users", json={"name": "Atendente Saldo", "email": "saldo@teste.local", "password": "senha-saldo-123"}, headers=auth)
+    tk = client.post(f"{API}/oauth/token", data={"grant_type": "password", "username": "saldo@teste.local", "password": "senha-saldo-123"}).json()
+    at = {"Authorization": f"Bearer {tk['access_token']}"}
+    assert client.get(f"{API}/text/correct/status", headers=at).status_code == 403
+    assert client.put(f"{API}/text/correct/status", json={"balanceUsd": 1}, headers=at).status_code == 403
+    assert client.put(f"{API}/text/correct/status", json={"balanceUsd": "abc"}, headers=auth).status_code == 422
+    with S() as db:
+        assert db.query(CorretorConta).count() == 1
