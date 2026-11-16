@@ -92,13 +92,27 @@ TETOS = (
     ("/api/v1/messages/media", 55 * MB),  # envio de arquivo (até 50 MB)
 )
 TETO_PADRAO = 2 * MB
+# Outro sistema (chave de API) manda documento em base64 dentro do JSON, como no Digisac (50 MB → ~67 MB)
+TETO_MENSAGEM_COM_ARQUIVO = 70 * MB
 
 
 def teto_para(path: str) -> int:
+    if path == "/api/v1/messages":
+        return TETO_MENSAGEM_COM_ARQUIVO
     for prefixo, teto in TETOS:
         if path.startswith(prefixo):
             return teto
     return TETO_PADRAO
+
+
+def _chave_de_api_existe(token: str) -> bool:
+    from . import integracao  # aqui dentro: integracao também importa este módulo
+    from .db import SessionLocal
+
+    if not integracao.parece_chave(token):
+        return False
+    with SessionLocal() as db:
+        return integracao.chave_valida(db, token) is not None
 
 
 def acesso_para_corpo_grande(path: str, headers: dict[bytes, bytes]) -> bool:
@@ -111,6 +125,10 @@ def acesso_para_corpo_grande(path: str, headers: dict[bytes, bytes]) -> bool:
         valor = headers.get(b"authorization", b"").decode("latin-1")
         token = valor[7:] if valor.lower().startswith("bearer ") else ""
         return decode_token(token) is not None  # assinatura e validade; o resto a rota confere
+    if path == "/api/v1/messages":
+        valor = headers.get(b"authorization", b"").decode("latin-1")
+        token = valor[7:].strip() if valor.lower().startswith("bearer ") else ""
+        return decode_token(token) is not None or _chave_de_api_existe(token)
     return True
 
 

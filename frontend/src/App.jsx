@@ -14,6 +14,7 @@ import Cadastro from "./pages/Cadastro";
 import Agora from "./pages/Agora";
 import Simulador from "./pages/Simulador";
 import Conexoes from "./pages/Conexoes";
+import ApiModulo from "./pages/ApiModulo";
 
 const MeContext = createContext(null);
 export const useMe = () => useContext(MeContext);
@@ -30,6 +31,7 @@ const MENU = [
   { to: "/departamentos", label: "Departamentos", icon: "building", admin: true },
   { to: "/assuntos", label: "Assuntos", icon: "list", admin: true },
   { to: "/tags", label: "Tags", icon: "tag", admin: true },
+  { to: "/api", label: "API", icon: "key", admin: true },
 ];
 
 const STATUS_LABEL = { online: "Online", away: "Ausente", offline: "Offline" };
@@ -232,6 +234,7 @@ function Layout() {
             <Route path="/tags" element={<Cadastro titulo="Tags" subtitulo="Etiquetas para organizar os contatos." path="/tags" campos={[{ name: "label", label: "Nome" }, { name: "color", label: "Cor", type: "color" }]} colunas={[{ name: "label", label: "Nome", render: (v, it) => <span className="tag" style={{ background: it.color }}>{v}</span> }]} />} />
             <Route path="/respostas" element={<Cadastro titulo="Respostas rápidas" subtitulo="No atendimento, digite / e o atalho para inserir o texto." path="/quick-replies" campos={[{ name: "title", label: "Atalho" }, { name: "text", label: "Texto", type: "textarea" }]} colunas={[{ name: "title", label: "Atalho", render: (v) => <strong>/{v}</strong> }, { name: "text", label: "Texto", render: (v) => <span className="muted">{v}</span> }]} />} />
             <Route path="/conexoes" element={<Conexoes />} />
+            {me.isAdmin && <Route path="/api" element={<ApiModulo />} />}
             <Route path="/usuarios" element={<Cadastro titulo="Usuários" subtitulo="Quem acessa o InteliSac. O login usa e-mail e senha do Supabase." path="/users" arquivar campos={[
               { name: "name", label: "Nome" },
               { name: "email", label: "E-mail", type: "email" },

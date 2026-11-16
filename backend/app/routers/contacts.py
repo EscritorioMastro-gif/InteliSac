@@ -3,10 +3,11 @@
 import re
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from .. import avatars, ticketing
+from .. import avatars, integracao, ticketing
 from ..db import get_db
 from ..deps import current_user, paginate
 from ..models import Contact, Department, Service, Tag, Ticket, User, iso
@@ -147,6 +148,15 @@ async def create_contact(body: dict = Body(...), db: Session = Depends(get_db), 
     _apply_contact(db, contact, body, user)
     if not contact.number:
         raise HTTPException(422, detail={"message": "Informe o número"})
+    if integracao.eh_integracao(user):
+        # Outro sistema (como no Digisac): número já cadastrado devolve o contato que existe
+        contact.number = _so_digitos(contact.number)
+        filtros = [Contact.number == contact.number]
+        if service.type == "whatsapp":
+            filtros.append(Contact.jid == f"{contact.number}@s.whatsapp.net")
+        existente = db.query(Contact).filter(Contact.service_id == service.id, or_(*filtros)).first()
+        if existente:
+            return JSONResponse(status_code=200, content=existente.to_dict())
     if db.query(Contact).filter(Contact.service_id == service.id, Contact.number == contact.number).first():
         raise HTTPException(422, detail={"message": "Já existe um contato com esse número nessa conexão"})
     contact.name = contact.name or contact.number

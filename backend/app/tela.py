@@ -70,7 +70,8 @@ def montar(app: FastAPI) -> bool:
 
     @app.get("/{caminho:path}", include_in_schema=False)
     def tela(caminho: str, request: Request):
-        if caminho == "api" or caminho.startswith("api/"):
+        # "/api" sozinho é a tela do módulo API; as chamadas da API são "/api/..."
+        if caminho.startswith("api/"):
             raise HTTPException(404, detail={"message": "Rota não encontrada"})
         if caminho:
             arquivo = (DIST / caminho).resolve()

@@ -843,6 +843,7 @@ export default function Atendimento() {
                       </div>
                     )}
                     {m.isFromMe && !m.userId && m.data?.origin === "device" && <div className="author device">Pelo celular / outro aparelho</div>}
+                    {m.isFromMe && !m.userId && m.data?.api && <div className="author device" title="Enviada por outro sistema, com uma chave de API">Integração · {m.data.api.keyName}</div>}
                     {!m.isFromMe && m.data?.sender && (
                       <div className="author sender" style={{ color: corDe(m.data.sender.jid || m.data.sender.number) }}>
                         {m.data.sender.name || m.data.sender.number || "Participante"}

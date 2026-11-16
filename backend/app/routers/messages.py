@@ -1,3 +1,5 @@
+import base64
+import binascii
 import mimetypes
 import re
 from datetime import datetime, timedelta, timezone
@@ -5,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
-from .. import audio, storage, ticketing
+from .. import audio, integracao, storage, ticketing
 from ..channels import get_adapter
 from ..channels.base import MediaOut, Quoted, SendResult
 from ..db import get_db
@@ -129,8 +131,71 @@ def list_messages(
     }
 
 
+async def _enviar_pela_api(body: dict, db: Session, user: User):
+    """Envio por outro sistema (chave de API), no formato do Digisac: texto, ou arquivo em
+    `file: {base64, mimetype, name}` com legenda em `text`. Não abre chamado nem assume o
+    atendimento de ninguém (se o cliente responder, o chamado abre na Fila como sempre) e
+    não leva assinatura. Se o WhatsApp recusar, a resposta é erro (a mensagem fica registrada)."""
+    contact, service = _contato_para_envio(db, user, body.get("contactId"))
+    espera = integracao.envios.espera(user.api_key_id)
+    if espera:
+        raise HTTPException(429, detail={"message": "Limite de 40 envios por minuto por chave. Espere um pouco."},
+                            headers={"Retry-After": str(espera)})
+    texto = (body.get("text") or "").strip()
+    arquivo = body.get("file") if isinstance(body.get("file"), dict) else None
+    if not texto and not arquivo:
+        raise HTTPException(422, detail={"message": "Mensagem vazia (mande text e/ou file)"})
+    integracao.envios.falhou(user.api_key_id)  # conta o envio
+    data: dict = {"api": {"keyId": user.api_key_id, "keyName": user.api_key_nome}}
+    preview = None
+    adapter = get_adapter(service.type)
+    if arquivo:
+        try:
+            raw = base64.b64decode(str(arquivo.get("base64") or ""), validate=True)
+        except (ValueError, binascii.Error):
+            raise HTTPException(422, detail={"message": "file.base64 inválido"})
+        if not raw:
+            raise HTTPException(422, detail={"message": "Arquivo vazio"})
+        if len(raw) > storage.MAX_BYTES:
+            raise HTTPException(413, detail={"message": f"Arquivo maior que {storage.MAX_BYTES // (1024 * 1024)} MB"})
+        nome = str(arquivo.get("name") or "").strip()[:200] or "arquivo"
+        mimetype = str(arquivo.get("mimetype") or "").strip() or mimetypes.guess_type(nome)[0] or "application/octet-stream"
+        kind = storage.media_kind(mimetype)
+        path = storage.object_path(user.account_id, contact.id, nome, mimetype)
+        try:
+            await storage.upload(path, raw, mimetype)
+            link = storage.sign_one(path, expires=900)  # o WhatsApp baixa daqui
+        except storage.StorageError as e:
+            raise HTTPException(502, detail={"message": str(e)})
+        result = await adapter.send_media(
+            service, contact, MediaOut(url=link, mimetype=mimetype, file_name=nome, kind=kind, caption=texto or None)
+        )
+        data["file"] = {"path": path, "mimetype": mimetype, "name": nome, "size": len(raw)}
+        msg_type = kind
+        preview = storage.LABELS.get(kind, "[Arquivo]") + (f" {nome}" if kind == "document" else "")
+    else:
+        result = await adapter.send_text(service, contact, texto)
+        msg_type = "chat"
+    _guardar_jid(db, contact, result)
+    if result.ok:
+        data["ack"] = "sent"
+    else:
+        data["error"] = result.error
+    msg, events = ticketing.register_message(
+        db, contact, texto, is_from_me=True, user=None, msg_type=msg_type, external_id=result.external_id,
+        data=data, open_if_needed=False, preview=preview,
+    )
+    db.commit()
+    final = await _emitir(user, events, msg)
+    if not result.ok:
+        raise HTTPException(502, detail={"message": f"Não enviada: {result.error}", "id": msg.id})
+    return final
+
+
 @router.post("", status_code=201)
 async def send_message(body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if integracao.eh_integracao(user):
+        return await _enviar_pela_api(body, db, user)
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(422, detail={"message": "Mensagem vazia"})

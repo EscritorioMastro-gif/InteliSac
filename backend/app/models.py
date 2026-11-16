@@ -190,6 +190,43 @@ class CorretorConta(Base):
     sem_credito_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ApiKey(Base):
+    """Chave de API para outros sistemas (rotinas que disparam mensagens e guias).
+    A chave inteira só aparece uma vez, na criação; aqui fica só o hash (SHA-256) e o começo."""
+
+    __tablename__ = "api_keys"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    prefix: Mapped[str] = mapped_column(String(20))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "prefix": self.prefix,
+            "createdBy": self.created_by,
+            "createdAt": iso(self.created_at),
+            "lastUsedAt": iso(self.last_used_at),
+            "revokedAt": iso(self.revoked_at),
+        }
+
+
+class ModuloApi(Base):
+    """Senha extra para entrar no módulo API (além de ser administrador)."""
+
+    __tablename__ = "modulo_api"
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    senha_hash: Mapped[str] = mapped_column(String(300))
+    atualizado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    atualizado_por: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
 class QuickReply(Base):
     __tablename__ = "quick_replies"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

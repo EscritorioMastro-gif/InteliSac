@@ -67,10 +67,10 @@ async function refresh() {
   return refreshing;
 }
 
-export async function api(path, { method = "GET", body, params } = {}, retry = true) {
+export async function api(path, { method = "GET", body, params, headers: extra } = {}, retry = true) {
   const url = new URL(BASE + path, window.location.origin);
   Object.entries(params || {}).forEach(([k, v]) => v !== undefined && v !== null && url.searchParams.set(k, v));
-  const headers = { "Content-Type": "application/json" };
+  const headers = { "Content-Type": "application/json", ...(extra || {}) };
   const t = getTokens();
   if (t?.access_token) headers.Authorization = `Bearer ${t.access_token}`;
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -82,7 +82,7 @@ export async function api(path, { method = "GET", body, params } = {}, retry = t
       window.location.href = "/login";
       throw new Error("Sessão expirada");
     }
-    return api(path, { method, body, params }, false);
+    return api(path, { method, body, params, headers: extra }, false);
   }
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.detail?.message || `Erro ${res.status}`);

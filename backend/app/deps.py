@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from . import integracao
 from .db import get_db
 from .models import User
 from .security import decode_token, versao_confere
@@ -8,7 +9,9 @@ from .security import decode_token, versao_confere
 
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.lower().startswith("bearer ") else ""
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if integracao.parece_chave(token):  # outro sistema com chave de API (só algumas rotas)
+        return integracao.usuario_da_chave(request, db, token)
     data = decode_token(token)
     if not data:
         raise HTTPException(401, detail={"message": "Token inválido ou expirado"})
