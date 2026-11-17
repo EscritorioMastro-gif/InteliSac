@@ -106,6 +106,13 @@ def open_ticket(
     return ticket, [("ticket.created", ticket.to_dict()), ("message.created", msg.to_dict())]
 
 
+def conta_como_resposta(data: dict | None) -> bool:
+    """Mensagem nossa que tira o cliente da espera: de uma pessoa (InteliSac ou celular/Digisac).
+    Envio do robô da API (guias automáticas) e envio que falhou não contam."""
+    data = data or {}
+    return "api" not in data and "error" not in data
+
+
 def register_message(
     db: Session,
     contact: Contact,
@@ -159,6 +166,10 @@ def register_message(
         if not contact.unread or contact.unread_since is None:
             contact.unread_since = stamp
         contact.unread = (contact.unread or 0) + 1
+        if contact.waiting_since is None:
+            contact.waiting_since = stamp
+    elif is_from_me and conta_como_resposta(data):
+        contact.waiting_since = None
     db.flush()
     events.append(("message.created", msg.to_dict()))
     if ticket:
@@ -235,6 +246,7 @@ def close_ticket(
     contact.current_ticket_id = None
     contact.unread = 0
     contact.unread_since = None
+    contact.waiting_since = None
     texto = f"Chamado {ticket.protocol} fechado por {by_user.name}"
     if ticket.topics:
         texto += " · Assunto: " + ", ".join(t.name for t in ticket.topics)

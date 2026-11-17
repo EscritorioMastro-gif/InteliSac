@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import command
 from starlette.requests import Request
 
-from app import tela
+from app import tela, ticketing
 from app.db import SessionLocal
 from app.migrate import alembic_config
 from app.models import Contact
@@ -83,6 +83,56 @@ def test_lista_traz_a_hora_da_espera(client, auth):
     assert item["unreadSince"] and item["unread"] == 1
 
 
+def test_sem_resposta_continua_contando_depois_de_aberta(client, auth):
+    sim = _sim(client, auth)
+    cid = _cliente(client, auth, sim, "5511900081004", "preciso da guia")
+    c = _contato(client, auth, cid)
+    inicio = _iso(c["waitingSince"])
+    assert _iso(c["unreadSince"]) == inicio
+
+    # abrir a conversa zera as não lidas, mas o cliente continua esperando resposta
+    client.post(f"{API}/contacts/{cid}/mark-read", headers=auth)
+    _cliente(client, auth, sim, "5511900081004", "alguém?")
+    client.post(f"{API}/contacts/{cid}/mark-read", headers=auth)
+    c = _contato(client, auth, cid)
+    assert c["unread"] == 0 and c["unreadSince"] is None
+    assert _iso(c["waitingSince"]) == inicio
+
+    # o atendente respondeu: acabou a espera
+    r = client.post(f"{API}/messages", json={"contactId": cid, "text": "segue a guia"}, headers=auth)
+    assert r.status_code in (200, 201), r.text
+    assert _contato(client, auth, cid)["waitingSince"] is None
+
+    # o cliente escreve de novo: nova espera
+    _cliente(client, auth, sim, "5511900081004", "obrigado")
+    assert _iso(_contato(client, auth, cid)["waitingSince"]) > inicio
+
+
+def test_o_que_conta_como_resposta(client, auth):
+    sim = _sim(client, auth)
+    cid = _cliente(client, auth, sim, "5511900081005")
+    with SessionLocal() as db:
+        contato = db.get(Contact, cid)
+        assert contato.waiting_since is not None
+        # robô da API mandando guia e envio que falhou não contam como resposta
+        ticketing.register_message(db, contato, "guia", is_from_me=True, data={"api": {"keyName": "Fiscal"}}, open_if_needed=False)
+        ticketing.register_message(db, contato, "oi", is_from_me=True, data={"error": "sem conexão"}, open_if_needed=False)
+        assert contato.waiting_since is not None
+        # resposta pelo celular / Digisac conta
+        ticketing.register_message(db, contato, "respondi pelo celular", is_from_me=True, data={"origin": "device"}, open_if_needed=False)
+        assert contato.waiting_since is None
+        db.rollback()
+
+
+def test_fechar_chamado_tambem_zera_sem_resposta(client, auth):
+    sim = _sim(client, auth)
+    cid = _cliente(client, auth, sim, "5511900081006")
+    client.post(f"{API}/contacts/{cid}/mark-read", headers=auth)
+    assert _contato(client, auth, cid)["waitingSince"]
+    assert client.post(f"{API}/contacts/{cid}/ticket/close", json={}, headers=auth).status_code == 200
+    assert _contato(client, auth, cid)["waitingSince"] is None
+
+
 def _linha(tabela, **valores):
     """Preenche as colunas obrigatórias com valores quaisquer (o teste só olha as que passou)."""
     linha = {}
@@ -134,6 +184,46 @@ def test_migracao_preenche_as_conversas_que_ja_tinham_nao_lidas():
     assert linhas["c-zero"] is None
     # sem mensagens do cliente guardadas: usa a hora da última mensagem
     assert str(linhas["c-sem-msg"]).startswith("2026-11-17 10:07")
+
+
+def test_migracao_calcula_quem_espera_resposta():
+    banco = Path(tempfile.mkdtemp(prefix="intelisac-mig-")) / "m.db"
+    engine = sa.create_engine(f"sqlite:///{banco.as_posix()}")
+    cfg = alembic_config()
+    base = datetime(2026, 11, 17, 10, 0, tzinfo=timezone.utc)
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "0008")
+        meta = sa.MetaData()
+        meta.reflect(conn, only=["contacts", "messages"])
+        contatos, mensagens = meta.tables["contacts"], meta.tables["messages"]
+        conn.execute(contatos.insert(), [
+            _linha(contatos, id="espera", current_ticket_id="t1"),
+            _linha(contatos, id="respondido", current_ticket_id="t2"),
+            _linha(contatos, id="fechado", current_ticket_id=None),
+        ])
+        # (contato, minuto, é nosso, tipo, data)
+        seq = [
+            ("espera", 0, False, "chat", {}),
+            ("espera", 5, True, "chat", {}),            # resposta do atendente
+            ("espera", 20, False, "chat", {}),          # cliente volta a escrever: espera começa aqui
+            ("espera", 25, True, "chat", {"api": {}}),  # robô da API não conta
+            ("espera", 26, True, "ticket", {}),         # evento do chamado não conta
+            ("espera", 30, False, "chat", {}),
+            ("respondido", 0, False, "chat", {}),
+            ("respondido", 9, True, "chat", {"origin": "device"}),  # respondeu pelo celular
+            ("fechado", 0, False, "chat", {}),
+        ]
+        conn.execute(mensagens.insert(), [
+            _linha(mensagens, id=f"w{i}", contact_id=c, created_at=base + timedelta(minutes=m), is_from_me=eu, type=t, data=d)
+            for i, (c, m, eu, t, d) in enumerate(seq)
+        ])
+        command.upgrade(cfg, "0009")
+        linhas = dict(conn.execute(sa.text("SELECT id, waiting_since FROM contacts")).all())
+    engine.dispose()
+    assert str(linhas["espera"]).startswith("2026-11-17 10:20")
+    assert linhas["respondido"] is None
+    assert linhas["fechado"] is None
 
 
 def test_tela_deixa_abrir_pdf_do_storage_num_quadro(monkeypatch):

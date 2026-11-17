@@ -325,6 +325,8 @@ class Contact(Base):
     unread: Mapped[int] = mapped_column(Integer, default=0)
     # Hora da mais antiga das mensagens não lidas (a tela pinta de vermelho depois de 1h30)
     unread_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Desde quando o cliente espera resposta de uma pessoa (vale mesmo com a conversa já aberta)
+    waiting_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Foto do perfil do WhatsApp guardada no Storage; atualizada de tempos em tempos
     avatar_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -349,6 +351,7 @@ class Contact(Base):
             "blocked": self.blocked,
             "unread": self.unread,
             "unreadSince": iso(self.unread_since) if self.unread else None,
+            "waitingSince": iso(self.waiting_since),
             "currentTicketId": self.current_ticket_id,
             "lastMessage": self.last_message,
             "lastMessageAt": iso(self.last_message_at),

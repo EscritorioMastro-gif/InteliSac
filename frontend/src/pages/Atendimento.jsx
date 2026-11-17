@@ -8,6 +8,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import Tiques from "../components/Tiques";
 import Midia, { MAX_ARQUIVO, fmtBytes } from "../components/Midia";
+import ContadorEspera, { esperaDesde } from "../components/ContadorEspera";
 import { useToast } from "../components/Toast";
 
 const ABAS = [
@@ -85,16 +86,6 @@ function TagsMini({ ids, tags, max = 2 }) {
   );
 }
 
-// Há quanto tempo o cliente espera na fila
-function esperaDesde(iso, agora) {
-  if (!iso) return "";
-  const min = Math.max(0, Math.floor((agora - new Date(iso).getTime()) / 60000));
-  if (min < 1) return "agora";
-  if (min < 60) return `${min} min`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `${h} h${min % 60 ? ` ${min % 60}` : ""}`;
-  return `${Math.floor(h / 24)} d`;
-}
 
 // 5516991452133 → +55 16 99145-2133
 function fmtNumero(n) {
@@ -105,9 +96,6 @@ function fmtNumero(n) {
   }
   return d ? `+${d}` : "";
 }
-
-// Mensagem do cliente sem ninguém abrir a conversa por 1h30: o contador fica vermelho
-const LIMITE_SEM_LEITURA_MS = 90 * 60 * 1000;
 
 // O WhatsApp só deixa editar até 15 minutos depois do envio
 const LIMITE_EDICAO_MS = 15 * 60 * 1000;
@@ -744,18 +732,7 @@ export default function Atendimento() {
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="muted ellipsis preview">{c.lastMessage || c.data?.number}</span>
-                  {c.unread > 0 && (() => {
-                    const espera = c.unreadSince ? agora - new Date(c.unreadSince).getTime() : 0;
-                    const atrasada = espera >= LIMITE_SEM_LEITURA_MS;
-                    return (
-                      <span
-                        className={`badge ${atrasada ? "badge-atrasada" : ""}`}
-                        title={c.unreadSince ? `${c.unread === 1 ? "Não lida" : `${c.unread} não lidas`} · a mais antiga há ${esperaDesde(c.unreadSince, agora)}` : undefined}
-                      >
-                        {c.unread}
-                      </span>
-                    );
-                  })()}
+                  <ContadorEspera c={c} agora={agora} />
                 </div>
               </div>
             </li>
