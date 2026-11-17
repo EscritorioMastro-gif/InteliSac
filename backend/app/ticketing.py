@@ -156,6 +156,8 @@ def register_message(
     # prévia na lista de conversas: o texto/legenda, ou "[Imagem]", "[Documento] x.pdf"...
     contact.last_message = text or preview or ""
     if not is_from_me and count_unread:
+        if not contact.unread or contact.unread_since is None:
+            contact.unread_since = stamp
         contact.unread = (contact.unread or 0) + 1
     db.flush()
     events.append(("message.created", msg.to_dict()))
@@ -232,6 +234,7 @@ def close_ticket(
         ticket.user_id = by_user.id
     contact.current_ticket_id = None
     contact.unread = 0
+    contact.unread_since = None
     texto = f"Chamado {ticket.protocol} fechado por {by_user.name}"
     if ticket.topics:
         texto += " · Assunto: " + ", ".join(t.name for t in ticket.topics)

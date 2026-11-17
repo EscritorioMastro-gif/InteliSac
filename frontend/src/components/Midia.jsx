@@ -16,7 +16,12 @@ function extensao(nome) {
   return m ? m[1].toUpperCase() : "ARQUIVO";
 }
 
-export default function Midia({ m, onAbrirImagem, onLinkExpirado }) {
+// PDF dá para ver dentro do sistema (o navegador mostra num quadro); os outros só baixando
+export function ehPdf(f) {
+  return /pdf/i.test(f?.mimetype || "");
+}
+
+export default function Midia({ m, onAbrirImagem, onAbrirPdf, onLinkExpirado }) {
   const avisou = useRef(false);
   const f = m.data?.file;
   if (!f) return null;
@@ -66,6 +71,27 @@ export default function Midia({ m, onAbrirImagem, onLinkExpirado }) {
         {m.type === "ptt" && <span className="media-voice-label"><Icon name="mic" size={13} /> Mensagem de voz</span>}
         <audio className="media-audio" src={m.fileUrl} controls preload="metadata" onError={expirou} />
         {baixar}
+      </div>
+    );
+  }
+  if (ehPdf(f) && onAbrirPdf) {
+    return (
+      <div className="media-doc">
+        <button type="button" className="media-doc-main" onClick={() => onAbrirPdf(m)} title={`Visualizar ${f.name}`}>
+          <span className="media-doc-icon"><Icon name="file" size={22} /><em>PDF</em></span>
+          <span className="media-doc-info">
+            <strong>{f.name}</strong>
+            <small>{fmtBytes(f.size)}</small>
+          </span>
+        </button>
+        <span className="media-doc-acoes">
+          <button type="button" className="media-doc-btn" onClick={() => onAbrirPdf(m)} title="Visualizar">
+            <Icon name="eye" size={15} /> Visualizar
+          </button>
+          <a className="media-doc-btn" href={m.downloadUrl || m.fileUrl} target="_blank" rel="noreferrer" title={`Baixar ${f.name}`}>
+            <Icon name="download" size={15} /> Baixar
+          </a>
+        </span>
       </div>
     );
   }

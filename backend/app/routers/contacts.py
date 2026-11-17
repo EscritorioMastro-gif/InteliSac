@@ -227,6 +227,7 @@ async def delete_contact(contact_id: str, db: Session = Depends(get_db), user: U
 async def mark_read(contact_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     contact = _get_contact(db, user, contact_id)
     contact.unread = 0
+    contact.unread_since = None
     db.commit()
     await emit(user.account_id, "contact.updated", contact.to_dict())
     return True

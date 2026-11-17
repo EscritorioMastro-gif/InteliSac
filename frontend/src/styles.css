@@ -266,6 +266,7 @@ input[type="color"] { padding: 2px; height: 38px; }
 .tabs button.active .count { background: var(--petrol-700); color: #fff; }
 .avatar { border-radius: 50%; color: #fff; display: grid; place-items: center; font-weight: 700; flex-shrink: 0; letter-spacing: 0.3px; }
 .badge { background: var(--petrol-700); color: #fff; border-radius: 999px; font-size: 11px; font-weight: 700; min-width: 20px; height: 20px; padding: 0 6px; display: inline-grid; place-items: center; }
+.badge.badge-atrasada { background: var(--danger); }
 .time-small { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .chat-list li.unread .time-small { color: var(--petrol-700); font-weight: 600; }
 
@@ -362,6 +363,13 @@ input[type="color"] { padding: 2px; height: 38px; }
 .media-doc-info { flex: 1; min-width: 0; display: grid; }
 .media-doc-info strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-doc-info small { color: var(--muted); font-size: 11.5px; }
+/* cartão do PDF: clicar mostra; Baixar ao lado */
+.media-doc:has(.media-doc-main) { flex-wrap: wrap; gap: 6px 10px; }
+.media-doc-main { all: unset; display: flex; align-items: center; gap: 10px; flex: 1 1 100%; min-width: 0; cursor: pointer; }
+.media-doc-main:focus-visible { outline: 2px solid var(--petrol-500); outline-offset: 2px; border-radius: 6px; }
+.media-doc-acoes { display: flex; gap: 6px; margin-left: 48px; }
+.media-doc-btn { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--petrol-700); font-size: 12px; font-weight: 500; text-decoration: none; cursor: pointer; }
+.media-doc-btn:hover:not(:disabled) { background: var(--petrol-50); border-color: var(--petrol-200); }
 .media-missing { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); padding: 6px; }
 .attach-btn { height: 42px; color: var(--petrol-700); }
 .chat-main { position: relative; }
@@ -377,6 +385,10 @@ input[type="color"] { padding: 2px; height: 38px; }
 .lightbox img { max-width: 100%; max-height: 75vh; object-fit: contain; }
 .btn-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; background: var(--petrol-700); color: #fff; text-decoration: none; font-weight: 500; }
 .btn-link:hover { background: var(--petrol-800); }
+.btn-sec { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); text-decoration: none; font-weight: 500; }
+.btn-sec:hover { background: var(--petrol-50); border-color: var(--petrol-200); }
+/* PDF aberto dentro do sistema */
+.pdf-quadro { display: block; width: 100%; height: min(calc(90vh - 140px), 900px); min-height: 240px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
 
 /* tags na lista e no topo da conversa */
 .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }

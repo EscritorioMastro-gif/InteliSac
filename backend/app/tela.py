@@ -48,6 +48,8 @@ def csp(request: Request) -> str:
             f"media-src 'self' blob: {supa}".strip(),
             f"connect-src 'self' {ws}".strip(),
             "font-src 'self'",
+            # PDF recebido abre num quadro dentro da conversa, direto do Storage (link assinado)
+            f"frame-src {supa}" if supa else "frame-src 'none'",
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",

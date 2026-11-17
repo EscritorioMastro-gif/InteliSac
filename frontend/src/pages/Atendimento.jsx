@@ -106,6 +106,9 @@ function fmtNumero(n) {
   return d ? `+${d}` : "";
 }
 
+// Mensagem do cliente sem ninguém abrir a conversa por 1h30: o contador fica vermelho
+const LIMITE_SEM_LEITURA_MS = 90 * 60 * 1000;
+
 // O WhatsApp só deixa editar até 15 minutos depois do envio
 const LIMITE_EDICAO_MS = 15 * 60 * 1000;
 
@@ -132,6 +135,8 @@ export default function Atendimento() {
   const [anexos, setAnexos] = useState([]);
   const [arrastando, setArrastando] = useState(false);
   const [imagemAberta, setImagemAberta] = useState(null);
+  const [pdfAberto, setPdfAberto] = useState(null);
+  const mensagensEm = useRef(0);
   const [respondendo, setRespondendo] = useState(null);
   const [editando, setEditando] = useState(null);
   const [rascunho, setRascunho] = useState("");
@@ -168,7 +173,25 @@ export default function Atendimento() {
   const carregarConversa = useCallback((id) => {
     if (!id) return;
     api(`/contacts/${id}`).then(setContato).catch((e) => toast.show(e.message, "error"));
-    api("/messages", { params: { contactId: id, perPage: 100 } }).then((r) => setMensagens(r.data));
+    api("/messages", { params: { contactId: id, perPage: 100 } }).then((r) => {
+      mensagensEm.current = Date.now();
+      setMensagens(r.data);
+    });
+  }, [toast]);
+
+  // O link do arquivo vale 1 h: se a conversa está aberta há mais tempo, pega um link novo antes de mostrar
+  const abrirPdf = useCallback((m) => {
+    if (Date.now() - mensagensEm.current < 50 * 60 * 1000) {
+      setPdfAberto(m);
+      return;
+    }
+    api("/messages", { params: { contactId: m.contactId, perPage: 100 } })
+      .then((r) => {
+        mensagensEm.current = Date.now();
+        setMensagens(r.data);
+        setPdfAberto(r.data.find((x) => x.id === m.id) || m);
+      })
+      .catch((e) => toast.show(e.message, "error"));
   }, [toast]);
 
   useEffect(() => {
@@ -199,9 +222,8 @@ export default function Atendimento() {
     return () => ["tag.created", "tag.updated", "tag.destroyed"].forEach((ev) => s.off(ev, carregarTags));
   }, [carregarTags]);
 
-  // Fila: o "há quanto tempo espera" anda sozinho
+  // O relógio da lista anda sozinho: "espera X min" da Fila e o contador vermelho depois de 1h30
   useEffect(() => {
-    if (aba !== "queue") return undefined;
     setAgora(Date.now());
     const t = setInterval(() => setAgora(Date.now()), 30000);
     return () => clearInterval(t);
@@ -722,7 +744,18 @@ export default function Atendimento() {
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="muted ellipsis preview">{c.lastMessage || c.data?.number}</span>
-                  {c.unread > 0 && <span className="badge">{c.unread}</span>}
+                  {c.unread > 0 && (() => {
+                    const espera = c.unreadSince ? agora - new Date(c.unreadSince).getTime() : 0;
+                    const atrasada = espera >= LIMITE_SEM_LEITURA_MS;
+                    return (
+                      <span
+                        className={`badge ${atrasada ? "badge-atrasada" : ""}`}
+                        title={c.unreadSince ? `${c.unread === 1 ? "Não lida" : `${c.unread} não lidas`} · a mais antiga há ${esperaDesde(c.unreadSince, agora)}` : undefined}
+                      >
+                        {c.unread}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
             </li>
@@ -863,7 +896,7 @@ export default function Atendimento() {
                       </>
                     ) : (
                       <>
-                        <Midia m={m} onAbrirImagem={setImagemAberta} onLinkExpirado={() => carregarConversa(selId)} />
+                        <Midia m={m} onAbrirImagem={setImagemAberta} onAbrirPdf={abrirPdf} onLinkExpirado={() => carregarConversa(selId)} />
                         {contatosVcard.length > 0 ? (
                           <div className="vcards">
                             {contatosVcard.map((c, i) => (
@@ -1033,6 +1066,25 @@ export default function Atendimento() {
           </div>
           <div className="modal-actions">
             <a className="btn-link" href={imagemAberta.downloadUrl || imagemAberta.fileUrl} target="_blank" rel="noreferrer">
+              <Icon name="download" size={16} /> Baixar
+            </a>
+          </div>
+        </Modal>
+      )}
+
+      {pdfAberto && (
+        <Modal titulo={pdfAberto.data?.file?.name || "PDF"} onClose={() => setPdfAberto(null)} largura="min(96vw, 1100px)">
+          <iframe
+            className="pdf-quadro"
+            src={`${pdfAberto.fileUrl}#view=FitH`}
+            title={pdfAberto.data?.file?.name || "PDF"}
+            referrerPolicy="no-referrer"
+          />
+          <div className="modal-actions">
+            <a className="btn-sec" href={pdfAberto.fileUrl} target="_blank" rel="noreferrer">
+              <Icon name="external" size={16} /> Abrir em outra aba
+            </a>
+            <a className="btn-link" href={pdfAberto.downloadUrl || pdfAberto.fileUrl} target="_blank" rel="noreferrer">
               <Icon name="download" size={16} /> Baixar
             </a>
           </div>
