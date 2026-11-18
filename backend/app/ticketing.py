@@ -113,6 +113,26 @@ def conta_como_resposta(data: dict | None) -> bool:
     return "api" not in data and "error" not in data
 
 
+def quem_mandou(is_from_me: bool, user_id: str | None, data: dict | None) -> dict:
+    """Quem mandou a mensagem, para a lista de conversas mostrar embaixo do nome do contato.
+    - cliente: {"fromMe": False} (em grupo vem também "name": quem falou)
+    - colaborador pelo InteliSac: {"fromMe": True, "userId": ...}
+    - celular / outro aparelho: {"fromMe": True, "via": "device"}
+    - outro sistema (chave de API): {"fromMe": True, "via": "api", "name": nome da chave}"""
+    data = data or {}
+    if not is_from_me:
+        remetente = data.get("sender") or {}
+        nome = remetente.get("name") or remetente.get("number")
+        return {"fromMe": False, "name": nome} if nome else {"fromMe": False}
+    if user_id:
+        return {"fromMe": True, "userId": user_id}
+    if isinstance(data.get("api"), dict):
+        return {"fromMe": True, "via": "api", "name": data["api"].get("keyName")}
+    if data.get("origin") == "device":
+        return {"fromMe": True, "via": "device"}
+    return {"fromMe": True}
+
+
 def register_message(
     db: Session,
     contact: Contact,
@@ -162,6 +182,7 @@ def register_message(
     contact.last_message_at = stamp
     # prévia na lista de conversas: o texto/legenda, ou "[Imagem]", "[Documento] x.pdf"...
     contact.last_message = text or preview or ""
+    contact.last_message_sender = quem_mandou(is_from_me, msg.user_id, data)
     if not is_from_me and count_unread:
         if not contact.unread or contact.unread_since is None:
             contact.unread_since = stamp

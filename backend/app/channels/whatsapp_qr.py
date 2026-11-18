@@ -63,7 +63,8 @@ class WhatsAppQrAdapter(ChannelAdapter):
             payload["quoted"] = _quoted(quoted)
         if forwarded:
             payload["forwarded"] = True
-        return await self._post(service, "send-media", payload, timeout=180)
+        # arquivo de até 80 MB: o gateway baixa do Storage e sobe para o WhatsApp antes de responder
+        return await self._post(service, "send-media", payload, timeout=300)
 
     async def revoke(self, service, contact, external_id: str) -> SendResult:
         if not contact.jid:

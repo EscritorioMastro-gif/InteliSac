@@ -151,7 +151,8 @@ async def _enviar_pela_api(body: dict, db: Session, user: User):
     adapter = get_adapter(service.type)
     if arquivo:
         try:
-            raw = base64.b64decode(str(arquivo.get("base64") or ""), validate=True)
+            # pop: o texto em base64 (até ~107 MB) sai da memória antes de mandar ao Storage
+            raw = base64.b64decode(str(arquivo.pop("base64", None) or ""), validate=True)
         except (ValueError, binascii.Error):
             raise HTTPException(422, detail={"message": "file.base64 inválido"})
         if not raw:

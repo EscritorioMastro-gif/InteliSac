@@ -16,6 +16,7 @@ from starlette.requests import Request
 
 from .config import settings
 from .security import decode_token
+from .storage import MAX_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +88,17 @@ login_por_email = Limite(50, 15 * 60)  # um e-mail atacado a partir de muitos IP
 # Teto do corpo das requisições (ASGI puro: barra antes de ler o arquivo inteiro)
 # ---------------------------------------------------------------------------
 MB = 1024 * 1024
+# Os tetos acompanham o tamanho máximo de arquivo (storage.MAX_BYTES, 80 MB). Em base64 o
+# arquivo ocupa 1/3 a mais (80 MB → ~107 MB); a folga é para o resto da requisição.
+ARQUIVO_MAX = MAX_BYTES
+ARQUIVO_MAX_BASE64 = -(-ARQUIVO_MAX * 4 // 3)
 TETOS = (
-    ("/api/v1/gateway/events", 90 * MB),  # arquivo recebido no WhatsApp (até 50 MB) vem em base64
-    ("/api/v1/messages/media", 55 * MB),  # envio de arquivo (até 50 MB)
+    ("/api/v1/gateway/events", ARQUIVO_MAX_BASE64 + 10 * MB),  # arquivo recebido no WhatsApp vem em base64
+    ("/api/v1/messages/media", ARQUIVO_MAX + 5 * MB),  # envio de arquivo pela tela
 )
 TETO_PADRAO = 2 * MB
-# Outro sistema (chave de API) manda documento em base64 dentro do JSON, como no Digisac (50 MB → ~67 MB)
-TETO_MENSAGEM_COM_ARQUIVO = 70 * MB
+# Outro sistema (chave de API) manda documento em base64 dentro do JSON, como no Digisac
+TETO_MENSAGEM_COM_ARQUIVO = ARQUIVO_MAX_BASE64 + 3 * MB
 
 
 def teto_para(path: str) -> int:

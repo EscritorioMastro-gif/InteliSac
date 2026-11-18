@@ -121,7 +121,7 @@ def test_cabecalhos_de_seguranca_e_teto_do_corpo(client):
     grande = b"x" * (3 * 1024 * 1024)
     r = completo.post(f"{API}/contacts", content=grande, headers={"Content-Type": "application/json"})
     assert r.status_code == 413
-    # envio de arquivo tem teto maior (até 50 MB): 3 MB passa do teto e chega na rota (401 sem login)
+    # envio de arquivo tem teto maior (até 80 MB): 3 MB passa do teto e chega na rota (401 sem login)
     r = completo.post(f"{API}/messages/media", content=grande, headers={"Content-Type": "application/octet-stream"})
     assert r.status_code in (401, 422)
 

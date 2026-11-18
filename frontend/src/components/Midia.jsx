@@ -2,7 +2,9 @@
 import { useRef } from "react";
 import Icon from "./Icon";
 
-export const MAX_ARQUIVO = 50 * 1024 * 1024;
+// Tamanho máximo de arquivo: o mesmo do backend (storage.MAX_BYTES) e do gateway do WhatsApp
+export const MAX_ARQUIVO_MB = 80;
+export const MAX_ARQUIVO = MAX_ARQUIVO_MB * 1024 * 1024;
 
 export function fmtBytes(n) {
   if (!n && n !== 0) return "";

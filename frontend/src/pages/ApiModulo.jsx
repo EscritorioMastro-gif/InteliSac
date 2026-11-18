@@ -161,7 +161,7 @@ export default function ApiModulo() {
             <tr><td>Achar ou criar o contato (devolve o que já existe)</td><td><code>POST /contacts</code> <span className="muted">{"{ name, number, serviceId }"}</span></td></tr>
             <tr><td>Procurar contato pelo número</td><td><code>GET /contacts?where[data.number]=55…&amp;where[serviceId]=…</code></td></tr>
             <tr><td>Mandar texto</td><td><code>POST /messages</code> <span className="muted">{"{ contactId, text }"}</span></td></tr>
-            <tr><td>Mandar documento (guia em PDF, até 50 MB)</td><td><code>POST /messages</code> <span className="muted">{"{ contactId, text, file: { base64, mimetype, name } }"}</span></td></tr>
+            <tr><td>Mandar documento (guia em PDF, até 80 MB)</td><td><code>POST /messages</code> <span className="muted">{"{ contactId, text, file: { base64, mimetype, name } }"}</span></td></tr>
             <tr><td>Ver se tem atendimento aberto</td><td><code>GET /tickets?where[contactId]=…&amp;where[isOpen]=true</code></td></tr>
             <tr><td>Mensagens do atendimento</td><td><code>GET /messages?where[contactId]=…&amp;where[ticketId]=…</code></td></tr>
             <tr><td>Fechar o atendimento</td><td><code>POST /contacts/&#123;id&#125;/ticket/close</code></td></tr>

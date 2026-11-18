@@ -208,7 +208,8 @@ def test_arquivo_grande_so_com_chave_valida(client, chave):
     # com a chave certa o corpo passa do portão (a rota reclama: falta o contato)
     ok = {"Content-Type": "application/json", "Authorization": f"Bearer {chave['key']}"}
     assert completo.post(f"{API}/messages", content=grande, headers=ok).status_code == 404
-    assert TETO_MENSAGEM_COM_ARQUIVO == 70 * 1024 * 1024
+    # o teto acompanha o arquivo de 80 MB, que em base64 ocupa 1/3 a mais (~107 MB)
+    assert 107 * 1024 * 1024 < TETO_MENSAGEM_COM_ARQUIVO <= 112 * 1024 * 1024
 
 
 def test_chave_revogada_para_na_hora(client, passe, wa):

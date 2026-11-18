@@ -16,9 +16,11 @@ import httpx
 from .config import settings
 
 BUCKET = "intelisac-midia"
-# 50 MB por arquivo = limite padrão do Supabase. No plano Pro dá para subir em
-# Storage → Settings → "Upload file size limit"; depois aumente aqui também.
-MAX_BYTES = 50 * 1024 * 1024
+# 80 MB por arquivo (enviar e receber). O padrão do Supabase é 50 MB: para passar disso o
+# projeto precisa do plano Pro e de Storage → Settings → "Upload file size limit" em 80 MB
+# ou mais. Os tetos de requisição (protecao.py) são calculados a partir deste valor; a tela
+# (MAX_ARQUIVO em Midia.jsx) e o gateway do WhatsApp (MAX_MEDIA_MB) têm o mesmo número.
+MAX_BYTES = 80 * 1024 * 1024
 LINK_SECONDS = 3600
 
 
@@ -45,9 +47,18 @@ def _url(path: str) -> str:
 def _erro(res: httpx.Response) -> str:
     try:
         body = res.json()
-        return body.get("message") or body.get("error") or str(body)[:200]
     except ValueError:
         return res.text[:200]
+    if not isinstance(body, dict):
+        return str(body)[:200]
+    msg = body.get("message") or body.get("error") or str(body)[:200]
+    # Arquivo acima do limite configurado no Supabase (padrão 50 MB): diz onde aumentar
+    if res.status_code == 413 or str(body.get("statusCode")) == "413" or "maximum allowed size" in str(msg):
+        return (
+            f"arquivo maior que o limite do Supabase. Aumente em Storage → Settings → "
+            f"\"Upload file size limit\" para {MAX_BYTES // (1024 * 1024)} MB (plano Pro)"
+        )
+    return msg
 
 
 def ensure_bucket() -> bool:

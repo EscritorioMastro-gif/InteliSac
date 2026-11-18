@@ -125,7 +125,7 @@ def test_limites_e_simulador(client, auth, wa, fake_storage, monkeypatch):
     assert r.status_code == 422
 
     # Conexão simulador: registra sem gateway e sem assinatura
-    monkeypatch.setattr(storage, "MAX_BYTES", 50 * 1024 * 1024)
+    monkeypatch.setattr(storage, "MAX_BYTES", 80 * 1024 * 1024)
     sim = next(s for s in client.get(f"{API}/services", headers=auth).json()["data"] if s["type"] == "simulador")
     client.post(f"{API}/simulator/inbound", json={"serviceId": sim["id"], "from": "5511900007777", "name": "Sim Mídia", "text": "oi"}, headers=auth)
     cs = client.get(f"{API}/contacts", params={"serviceId": sim["id"], "number": "5511900007777"}, headers=auth).json()["data"][0]

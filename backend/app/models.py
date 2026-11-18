@@ -333,6 +333,8 @@ class Contact(Base):
     avatar_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Quem mandou a última mensagem (a lista mostra embaixo do nome): ver ticketing.quem_mandou
+    last_message_sender: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     tags: Mapped[list["Tag"]] = relationship(secondary=contact_tags, lazy="selectin")
@@ -354,6 +356,7 @@ class Contact(Base):
             "waitingSince": iso(self.waiting_since),
             "currentTicketId": self.current_ticket_id,
             "lastMessage": self.last_message,
+            "lastMessageSender": self.last_message_sender,
             "lastMessageAt": iso(self.last_message_at),
             "tagIds": [t.id for t in self.tags],
             "createdAt": iso(self.created_at),

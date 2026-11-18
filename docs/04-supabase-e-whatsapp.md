@@ -58,9 +58,12 @@ Fotos, áudios, vídeos e documentos ficam no bucket **privado** `intelisac-midi
 bucket sozinho ao iniciar. Só o backend acessa o bucket, usando a chave secret. A tela recebe links
 assinados que valem 1 hora; ao reabrir a conversa, links novos são gerados.
 
-- Limite: **50 MB por arquivo**, que é o padrão do Supabase. No plano Pro dá para subir em
-  Storage → Settings → "Upload file size limit". Depois, ajuste `MAX_BYTES` em
-  `backend/app/storage.py` e `MAX_ARQUIVO` em `frontend/src/components/Midia.jsx`.
+- Limite: **80 MB por arquivo** (enviar e receber). O padrão do Supabase é 50 MB: para o
+  InteliSac aceitar até 80 MB, o projeto precisa do plano Pro e de Storage → Settings →
+  "Upload file size limit" em 80 MB ou mais. Sem isso, arquivo acima de 50 MB é recusado
+  pelo Supabase (a conversa mostra o aviso). Para mudar o limite do InteliSac, são três
+  lugares com o mesmo número: `MAX_BYTES` em `backend/app/storage.py`, `MAX_ARQUIVO_MB` em
+  `frontend/src/components/Midia.jsx` e `MAX_MEDIA_MB` no gateway do WhatsApp.
 - Plano Pro: 100 GB de arquivos e 250 GB de download por mês incluídos, mais backup diário.
 - Arquivos recebidos que não puderem ser baixados ou guardados continuam aparecendo na conversa
   como "[Imagem]", "[Documento] nome.pdf" etc., com o aviso do motivo.

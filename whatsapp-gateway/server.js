@@ -64,23 +64,28 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 const queue = [];
 let flushing = false;
 
+// A fila guarda o evento já em texto (JSON): um arquivo grande fica na memória uma vez só.
 function postEvent(event) {
-  queue.push(event);
+  queue.push(JSON.stringify(event));
   if (queue.length > 10000) queue.shift();
   flush();
 }
+
+// Evento com arquivo (até ~107 MB em base64) demora mais: o backend ainda guarda no Storage antes
+// de responder. 15 s + 2 s por MB (se cortasse antes, o mesmo arquivo seria mandado de novo).
+const prazoDoEvento = (corpo) => 15000 + Math.ceil(corpo.length / 1048576) * 2000;
 
 async function flush() {
   if (flushing) return;
   flushing = true;
   while (queue.length) {
-    const ev = queue[0];
+    const corpo = queue[0];
     try {
       const res = await fetch(`${BACKEND_URL}/api/v1/gateway/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Gateway-Secret": SECRET },
-        body: JSON.stringify(ev),
-        signal: AbortSignal.timeout(15000),
+        body: corpo,
+        signal: AbortSignal.timeout(prazoDoEvento(corpo)),
       });
       if (res.status >= 500) throw new Error(`backend respondeu ${res.status}`);
       if (!res.ok) log("evento recusado pelo backend:", res.status, (await res.text()).slice(0, 300));
@@ -249,7 +254,8 @@ function toNum(t) {
 }
 const toSeconds = toNum;
 
-const MAX_MEDIA_BYTES = Number(process.env.MAX_MEDIA_MB || 50) * 1024 * 1024;
+// Mesmo limite do backend (storage.MAX_BYTES) e da tela: 80 MB por arquivo
+const MAX_MEDIA_BYTES = Number(process.env.MAX_MEDIA_MB || 80) * 1024 * 1024;
 
 async function baixarMidia(s, sock, msg, info) {
   if (info.size && info.size > MAX_MEDIA_BYTES) {

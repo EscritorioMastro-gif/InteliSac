@@ -188,7 +188,8 @@ async def gateway_events(
         if media and media.get("base64"):
             # Arquivo recebido: guarda no Supabase Storage; a mensagem fica só com a legenda.
             try:
-                raw = base64.b64decode(media["base64"])
+                # pop: o texto em base64 (até ~107 MB) sai da memória antes de mandar ao Storage
+                raw = base64.b64decode(media.pop("base64"))
                 mimetype = media.get("mimetype") or "application/octet-stream"
                 nome = media.get("fileName") or storage.safe_name(None, mimetype)
                 path = storage.object_path(service.account_id, contact.id, nome, mimetype)

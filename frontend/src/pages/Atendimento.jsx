@@ -7,8 +7,9 @@ import Modal from "../components/Modal";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import Tiques from "../components/Tiques";
-import Midia, { MAX_ARQUIVO, fmtBytes } from "../components/Midia";
+import Midia, { MAX_ARQUIVO, MAX_ARQUIVO_MB, fmtBytes } from "../components/Midia";
 import ContadorEspera, { esperaDesde } from "../components/ContadorEspera";
+import PreviaConversa from "../components/PreviaConversa";
 import { useToast } from "../components/Toast";
 
 const ABAS = [
@@ -100,6 +101,11 @@ function fmtNumero(n) {
 // O WhatsApp só deixa editar até 15 minutos depois do envio
 const LIMITE_EDICAO_MS = 15 * 60 * 1000;
 
+// Mouse parado este tempo num contato da lista: abre a prévia da conversa
+const ESPERA_PREVIA_MS = 1500;
+
+const primeiroNome = (nome) => String(nome || "").trim().split(/\s+/)[0] || "";
+
 export default function Atendimento() {
   const me = useMe();
   const toast = useToast();
@@ -137,6 +143,11 @@ export default function Atendimento() {
   const [gravando, setGravando] = useState(false);
   const [tempoGravacao, setTempoGravacao] = useState(0);
   const [enviandoAudio, setEnviandoAudio] = useState(false);
+  const [previa, setPrevia] = useState(null); // prévia ao passar o mouse: { contato, ancora }
+  const previaRef = useRef(null);
+  previaRef.current = previa;
+  const previaAbrir = useRef(null);
+  const previaFechar = useRef(null);
   const gravacaoRef = useRef(null);
   const arquivoRef = useRef(null);
   const fimRef = useRef(null);
@@ -312,6 +323,40 @@ export default function Atendimento() {
     setSelId(id);
     setParams(id ? { contact: id } : {});
   };
+
+  // ----- prévia da conversa: mouse parado 1,5 s num contato da lista -----
+  const fecharPrevia = useCallback(() => {
+    clearTimeout(previaAbrir.current);
+    clearTimeout(previaFechar.current);
+    setPrevia(null);
+  }, []);
+
+  const entrarNoContato = (c, el) => {
+    clearTimeout(previaAbrir.current);
+    clearTimeout(previaFechar.current);
+    if (previaRef.current?.contato.id === c.id) return; // voltou da prévia para o mesmo contato
+    setPrevia(null);
+    if (c.id === selRef.current) return; // conversa já aberta ao lado
+    previaAbrir.current = setTimeout(() => {
+      if (el.isConnected) setPrevia({ contato: c, ancora: el.getBoundingClientRect() });
+    }, ESPERA_PREVIA_MS);
+  };
+
+  const sairDoContato = () => {
+    clearTimeout(previaAbrir.current);
+    clearTimeout(previaFechar.current);
+    // um instante para levar o mouse até a prévia (dá para rolar as mensagens dentro dela)
+    previaFechar.current = setTimeout(() => setPrevia(null), 250);
+  };
+
+  // Trocar de conversa, de aba ou de busca (e sair da tela) fecha a prévia
+  useEffect(() => fecharPrevia, [selId, aba, busca, fecharPrevia]);
+
+  // O contato saiu da lista (ex.: outro colega assumiu): a prévia dele fecha
+  useEffect(() => {
+    const aberta = previaRef.current;
+    if (aberta && !contatos.some((c) => c.id === aberta.contato.id)) fecharPrevia();
+  }, [contatos, fecharPrevia]);
 
   const enviar = async (e) => {
     e?.preventDefault();
@@ -575,7 +620,7 @@ export default function Atendimento() {
     const files = [...(lista || [])].filter(Boolean);
     if (!files.length || !selId) return;
     const grandes = files.filter((f) => f.size > MAX_ARQUIVO);
-    if (grandes.length) toast.show(`Arquivo maior que 50 MB não pode ser enviado: ${grandes.map((f) => f.name).join(", ")}`, "error");
+    if (grandes.length) toast.show(`Arquivo maior que ${MAX_ARQUIVO_MB} MB não pode ser enviado: ${grandes.map((f) => f.name).join(", ")}`, "error");
     const ok = files.filter((f) => f.size <= MAX_ARQUIVO && f.size > 0);
     if (ok.length) setAnexos(ok);
   };
@@ -657,6 +702,20 @@ export default function Atendimento() {
   const nomeDep = (id) => deps.find((d) => d.id === id)?.name || "Sem departamento";
   const nomeUser = (id) => usuarios.find((u) => u.id === id)?.name || "Atendente";
   const nomeContato = contato?.internalName || contato?.name || "Cliente";
+  // Quem mandou a última mensagem (aparece na lista, embaixo do nome do contato)
+  const quemMandou = (c) => {
+    const s = c.lastMessageSender;
+    if (!s || !c.lastMessage) return null;
+    if (!s.fromMe) {
+      if (!c.isGroup) return { rotulo: "Cliente", dica: "Última mensagem: enviada pelo cliente" };
+      return { rotulo: primeiroNome(s.name) || "Participante", dica: `Última mensagem: enviada por ${s.name || "um participante do grupo"}` };
+    }
+    if (s.userId === me.id) return { rotulo: "Você", dica: "Última mensagem: enviada por você" };
+    if (s.userId) return { rotulo: primeiroNome(nomeUser(s.userId)), dica: `Última mensagem: enviada por ${nomeUser(s.userId)}` };
+    if (s.via === "api") return { rotulo: "Integração", dica: `Última mensagem: enviada por outro sistema${s.name ? ` (chave ${s.name})` : ""}` };
+    if (s.via === "device") return { rotulo: "Celular", dica: "Última mensagem: enviada pelo celular / outro aparelho" };
+    return { rotulo: "Atendente", dica: "Última mensagem: enviada pela equipe" };
+  };
   const autorCitacao = (r) =>
     r.fromMe === false ? r.senderName || nomeContato : r.fromMe ? (r.userId ? nomeUser(r.userId) : "Você (celular)") : "Mensagem citada";
   const resumoMsg = (m) => {
@@ -703,15 +762,23 @@ export default function Atendimento() {
             ))}
           </div>
         </div>
-        <ul>
+        <ul onScroll={fecharPrevia}>
           {!carregandoLista && contatos.length === 0 && (
             <li className="chat-empty" style={{ cursor: "default" }}>
               <Icon name="inbox" size={28} />
               <span>{busca ? "Nenhuma conversa encontrada para essa busca." : VAZIO[aba]}</span>
             </li>
           )}
-          {contatos.map((c) => (
-            <li key={c.id} className={`${c.id === selId ? "sel" : ""} ${c.unread > 0 ? "unread" : ""}`} onClick={() => selecionar(c.id)}>
+          {contatos.map((c) => {
+            const quem = quemMandou(c);
+            return (
+            <li
+              key={c.id}
+              className={`${c.id === selId ? "sel" : ""} ${c.unread > 0 ? "unread" : ""}`}
+              onClick={() => { fecharPrevia(); selecionar(c.id); }}
+              onMouseEnter={(e) => entrarNoContato(c, e.currentTarget)}
+              onMouseLeave={sairDoContato}
+            >
               <Avatar nome={c.internalName || c.name} url={c.avatarUrl} grupo={c.isGroup} />
               <div className="grow">
                 <div className="row">
@@ -731,12 +798,16 @@ export default function Atendimento() {
                   )}
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
-                  <span className="muted ellipsis preview">{c.lastMessage || c.data?.number}</span>
+                  <span className="muted ellipsis preview">
+                    {quem && <span className="quem" title={quem.dica}>{quem.rotulo}: </span>}
+                    {c.lastMessage || c.data?.number}
+                  </span>
                   <ContadorEspera c={c} agora={agora} />
                 </div>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       </section>
 
@@ -1022,6 +1093,18 @@ export default function Atendimento() {
           </>
         )}
       </section>
+
+      {previa && (
+        <PreviaConversa
+          key={previa.contato.id}
+          contato={previa.contato}
+          ancora={previa.ancora}
+          meId={me.id}
+          nomeUser={nomeUser}
+          onMouseEnter={() => clearTimeout(previaFechar.current)}
+          onMouseLeave={sairDoContato}
+        />
+      )}
 
       {anexos.length > 0 && (
         <AnexoModal
