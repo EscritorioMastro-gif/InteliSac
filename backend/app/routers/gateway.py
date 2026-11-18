@@ -29,6 +29,13 @@ from ..realtime import emit, emit_service
 router = APIRouter(tags=["whatsapp"])
 
 
+# Avisos internos do WhatsApp (chegam quando alguém edita ou apaga uma mensagem). Um gateway
+# antigo ainda manda como "[tipo]"; não podem virar mensagem na conversa.
+AVISOS_INTERNOS_WHATSAPP = {
+    "[secretEncryptedMessage]", "[encEventResponseMessage]", "[encCommentMessage]", "[pinInChatMessage]",
+}
+
+
 def _check_secret(request: Request) -> None:
     given = request.headers.get("X-Gateway-Secret", "")
     if not settings.gateway_secret or not hmac.compare_digest(given, settings.gateway_secret):
@@ -153,6 +160,8 @@ async def gateway_events(
 
     if ev.get("type") == "message":
         m = ev.get("message") or {}
+        if (m.get("text") or "").strip() in AVISOS_INTERNOS_WHATSAPP:
+            return {"ok": True, "ignored": "aviso interno do WhatsApp"}
         ext_id = m.get("id")
         if ext_id and db.query(Message.id).filter(Message.service_id == service.id, Message.external_id == ext_id).first():
             return {"ok": True, "duplicate": True}

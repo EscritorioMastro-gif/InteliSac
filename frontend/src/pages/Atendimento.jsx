@@ -10,6 +10,7 @@ import Tiques from "../components/Tiques";
 import Midia, { MAX_ARQUIVO, MAX_ARQUIVO_MB, fmtBytes } from "../components/Midia";
 import ContadorEspera, { esperaDesde } from "../components/ContadorEspera";
 import PreviaConversa from "../components/PreviaConversa";
+import EmojiPicker from "../components/EmojiPicker";
 import { useToast } from "../components/Toast";
 
 const ABAS = [
@@ -48,6 +49,11 @@ function quandoCurto(iso) {
   if (dias === 1) return "Ontem";
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
+
+// Avisos internos do WhatsApp (chegavam quando alguém editava ou apagava uma mensagem):
+// os que já ficaram gravados não aparecem na conversa nem na lista
+const AVISOS_INTERNOS = new Set(["[secretEncryptedMessage]", "[encEventResponseMessage]", "[encCommentMessage]", "[pinInChatMessage]"]);
+const ehAvisoInterno = (texto) => AVISOS_INTERNOS.has((texto || "").trim());
 
 // ?contact= da página: só aceita um código de contato (um link com outro texto não monta outro endereço da API)
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -143,6 +149,8 @@ export default function Atendimento() {
   const [gravando, setGravando] = useState(false);
   const [tempoGravacao, setTempoGravacao] = useState(0);
   const [enviandoAudio, setEnviandoAudio] = useState(false);
+  const [emojiAberto, setEmojiAberto] = useState(false);
+  const [menuContato, setMenuContato] = useState(null); // clique direito na lista: { contato, x, y }
   const [previa, setPrevia] = useState(null); // prévia ao passar o mouse: { contato, ancora }
   const previaRef = useRef(null);
   previaRef.current = previa;
@@ -233,6 +241,7 @@ export default function Atendimento() {
     setEditando(null);
     setSelecionadas(null);
     setCorrecao(null);
+    setEmojiAberto(false);
     if (!selId) {
       setContato(null);
       setMensagens([]);
@@ -324,6 +333,60 @@ export default function Atendimento() {
     setParams(id ? { contact: id } : {});
   };
 
+  // Marcar como não lida (igual ao WhatsApp): se a conversa está aberta, sai dela,
+  // senão a tela já marcaria como lida de novo
+  const marcarNaoLida = async (c) => {
+    setMenuContato(null);
+    try {
+      await api(`/contacts/${c.id}/mark-unread`, { method: "POST" });
+      if (c.id === selRef.current) selecionar(null);
+      carregarLista();
+      toast.show("Conversa marcada como não lida");
+    } catch (err) {
+      toast.show(err.message, "error");
+    }
+  };
+
+  const marcarLida = async (c) => {
+    setMenuContato(null);
+    try {
+      await api(`/contacts/${c.id}/mark-read`, { method: "POST" });
+      carregarLista();
+    } catch (err) {
+      toast.show(err.message, "error");
+    }
+  };
+
+  // Menu do clique direito fecha com clique fora, Esc ou mudança de tamanho da janela
+  useEffect(() => {
+    if (!menuContato) return undefined;
+    const fechar = () => setMenuContato(null);
+    const esc = (e) => e.key === "Escape" && fechar();
+    document.addEventListener("mousedown", fechar);
+    document.addEventListener("keydown", esc);
+    window.addEventListener("resize", fechar);
+    return () => {
+      document.removeEventListener("mousedown", fechar);
+      document.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", fechar);
+    };
+  }, [menuContato]);
+
+  // Emoji entra onde está o cursor do campo de mensagem
+  const fecharEmoji = useCallback(() => setEmojiAberto(false), []);
+  const inserirEmoji = (emoji) => {
+    const el = textoRef.current;
+    const ini = el?.selectionStart ?? texto.length;
+    const fim = el?.selectionEnd ?? texto.length;
+    setTexto(texto.slice(0, ini) + emoji + texto.slice(fim));
+    requestAnimationFrame(() => {
+      if (!textoRef.current) return;
+      textoRef.current.focus();
+      const pos = ini + emoji.length;
+      textoRef.current.setSelectionRange(pos, pos);
+    });
+  };
+
   // ----- prévia da conversa: mouse parado 1,5 s num contato da lista -----
   const fecharPrevia = useCallback(() => {
     clearTimeout(previaAbrir.current);
@@ -362,6 +425,7 @@ export default function Atendimento() {
     e?.preventDefault();
     const t = texto.trim();
     if (!t || !selId || enviando) return;
+    setEmojiAberto(false);
     if (editando) return salvarEdicao(t);
     const citando = respondendo;
     setTexto("");
@@ -736,6 +800,7 @@ export default function Atendimento() {
   const itens = [];
   let ultimoDia = null;
   for (const m of mensagens) {
+    if (m.type === "chat" && ehAvisoInterno(m.text)) continue;
     const dia = rotuloDia(m.createdAt);
     if (dia !== ultimoDia) {
       itens.push({ sep: dia, id: `sep-${m.id}` });
@@ -776,6 +841,11 @@ export default function Atendimento() {
               key={c.id}
               className={`${c.id === selId ? "sel" : ""} ${c.unread > 0 ? "unread" : ""}`}
               onClick={() => { fecharPrevia(); selecionar(c.id); }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                fecharPrevia();
+                setMenuContato({ contato: c, x: e.clientX, y: e.clientY });
+              }}
               onMouseEnter={(e) => entrarNoContato(c, e.currentTarget)}
               onMouseLeave={sairDoContato}
             >
@@ -799,8 +869,8 @@ export default function Atendimento() {
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="muted ellipsis preview">
-                    {quem && <span className="quem" title={quem.dica}>{quem.rotulo}: </span>}
-                    {c.lastMessage || c.data?.number}
+                    {quem && !ehAvisoInterno(c.lastMessage) && <span className="quem" title={quem.dica}>{quem.rotulo}: </span>}
+                    {(!ehAvisoInterno(c.lastMessage) && c.lastMessage) || c.data?.number}
                   </span>
                   <ContadorEspera c={c} agora={agora} />
                 </div>
@@ -878,6 +948,13 @@ export default function Atendimento() {
                     <Icon name="plus" size={16} /><span>Abrir chamado</span>
                   </button>
                 )}
+                <span className="actions-sep" aria-hidden="true" />
+                <button className="icon-btn head-icon" onClick={() => marcarNaoLida(contato)} title="Marcar como não lida (sai da conversa e ela volta com o contador na lista)" aria-label="Marcar como não lida">
+                  <Icon name="unread" size={19} />
+                </button>
+                <button className="icon-btn head-icon" onClick={() => selecionar(null)} title="Sair da conversa (o chamado continua como está)" aria-label="Sair da conversa">
+                  <Icon name="logout" size={19} />
+                </button>
               </div>
             </header>
 
@@ -1053,6 +1130,17 @@ export default function Atendimento() {
                   e.target.value = "";
                 }}
               />
+              {emojiAberto && <EmojiPicker onEscolher={inserirEmoji} onFechar={fecharEmoji} />}
+              <button
+                type="button"
+                className={`icon-btn attach-btn emoji-btn ${emojiAberto ? "on" : ""}`}
+                onClick={() => setEmojiAberto((v) => !v)}
+                title="Emojis"
+                aria-label="Emojis"
+                aria-expanded={emojiAberto}
+              >
+                <Icon name="smile" size={20} />
+              </button>
               {!editando && (
                 <button type="button" className="icon-btn attach-btn" onClick={() => arquivoRef.current?.click()} title="Anexar arquivo (ou arraste para a conversa / cole um print com Ctrl+V)" aria-label="Anexar arquivo">
                   <Icon name="paperclip" size={20} />
@@ -1093,6 +1181,28 @@ export default function Atendimento() {
           </>
         )}
       </section>
+
+      {menuContato && (
+        <ul
+          className="context-menu"
+          role="menu"
+          style={{ left: Math.min(menuContato.x, window.innerWidth - 230), top: Math.min(menuContato.y, window.innerHeight - 110) }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <li role="menuitem" onClick={() => { const c = menuContato.contato; setMenuContato(null); selecionar(c.id); }}>
+            <Icon name="chat" size={16} />Abrir conversa
+          </li>
+          {menuContato.contato.unread > 0 ? (
+            <li role="menuitem" onClick={() => marcarLida(menuContato.contato)}>
+              <Icon name="checks" size={16} />Marcar como lida
+            </li>
+          ) : (
+            <li role="menuitem" onClick={() => marcarNaoLida(menuContato.contato)}>
+              <Icon name="unread" size={16} />Marcar como não lida
+            </li>
+          )}
+        </ul>
+      )}
 
       {previa && (
         <PreviaConversa

@@ -1,6 +1,7 @@
 """Contatos + ações do chamado atual do contato (mesmos caminhos do Digisac)."""
 
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -229,6 +230,18 @@ async def mark_read(contact_id: str, db: Session = Depends(get_db), user: User =
     contact.unread = 0
     contact.unread_since = None
     db.commit()
+    await emit(user.account_id, "contact.updated", contact.to_dict())
+    return True
+
+
+@router.post("/{contact_id}/mark-unread")
+async def mark_unread(contact_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Marcar como não lida (igual ao WhatsApp): a conversa volta a aparecer com o contador."""
+    contact = _get_contact(db, user, contact_id)
+    if not contact.unread:
+        contact.unread = 1
+        contact.unread_since = datetime.now(timezone.utc)
+        db.commit()
     await emit(user.account_id, "contact.updated", contact.to_dict())
     return True
 

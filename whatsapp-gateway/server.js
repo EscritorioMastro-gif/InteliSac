@@ -242,6 +242,12 @@ const IGNORED_TYPES = new Set([
   "keepInChatMessage",
   "editedMessage",
   "encReactionMessage",
+  // Avisos internos do WhatsApp que chegam junto quando alguém edita ou apaga uma mensagem
+  // (o texto novo / o "apagada" já vêm por outro caminho): não viram mensagem na conversa
+  "secretEncryptedMessage",
+  "encEventResponseMessage",
+  "encCommentMessage",
+  "pinInChatMessage",
 ]);
 
 // Números do WhatsApp podem vir como Long (protobuf)
