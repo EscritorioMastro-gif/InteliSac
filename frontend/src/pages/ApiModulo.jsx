@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import Icon from "../components/Icon";
 import Modal from "../components/Modal";
+import PageHead from "../components/PageHead";
+import { useConfirm } from "../components/Confirm";
 import { useToast } from "../components/Toast";
 
 // Passe do módulo (30 min): só na memória desta aba. Atualizar a página pede a senha de novo.
@@ -28,6 +30,7 @@ function useCopiar() {
 export default function ApiModulo() {
   const toast = useToast();
   const copiar = useCopiar();
+  const confirmar = useConfirm();
   const [estado, setEstado] = useState("carregando"); // carregando | definir | bloqueado | liberado
   const [chaves, setChaves] = useState([]);
   const [conexoes, setConexoes] = useState([]);
@@ -81,7 +84,13 @@ export default function ApiModulo() {
   };
 
   const revogar = async (c) => {
-    if (!window.confirm(`Revogar a chave "${c.name}"? Os sistemas que usam essa chave param de funcionar na hora.`)) return;
+    const ok = await confirmar({
+      titulo: `Revogar a chave “${c.name}”?`,
+      texto: "Os sistemas que usam essa chave param de funcionar na hora. Não dá para desfazer: será preciso criar outra chave.",
+      ok: "Revogar",
+      perigo: true,
+    });
+    if (!ok) return;
     try {
       await api(`/integracao/chaves/${c.id}`, { method: "DELETE", headers: cab() });
       toast.show("Chave revogada");
@@ -100,24 +109,34 @@ export default function ApiModulo() {
 
   return (
     <div className="page api-page">
-      <div className="page-head">
-        <h2>API</h2>
-        <div className="row gap">
-          <button onClick={() => setModal("senha")}><Icon name="key" size={16} />Trocar senha</button>
-          <button onClick={bloquear} title="Fecha o módulo (pede a senha de novo)"><Icon name="lock" size={16} />Bloquear</button>
-          <button className="primary" onClick={() => setModal("nova")}><Icon name="plus" size={16} />Nova chave</button>
-        </div>
-      </div>
-      <p className="page-sub">
-        Chaves para outros sistemas (rotinas de guias, cobrança, avisos…) mandarem mensagens e documentos pelo WhatsApp do InteliSac.
-        Cada sistema com a sua chave: se uma vazar, é só revogar aquela.
-      </p>
+      <PageHead
+        icone="key"
+        secao="Configurações"
+        titulo="API"
+        contagem={chaves.filter((c) => !c.revokedAt).length || null}
+        subtitulo="Chaves para outros sistemas (rotinas de guias, cobrança, avisos…) mandarem mensagens e documentos pelo WhatsApp do InteliSac. Cada sistema com a sua chave: se uma vazar, é só revogar aquela."
+      >
+        <button onClick={() => setModal("senha")}><Icon name="key" size={16} />Trocar senha</button>
+        <button onClick={bloquear} title="Fecha o módulo (pede a senha de novo)"><Icon name="lock" size={16} />Bloquear</button>
+        <button className="primary" onClick={() => setModal("nova")}><Icon name="plus" size={16} />Nova chave</button>
+      </PageHead>
 
       <div className="table-wrap">
         <table className="table">
           <thead><tr><th>Nome</th><th>Chave</th><th>Criada</th><th>Último uso</th><th>Situação</th><th /></tr></thead>
           <tbody>
-            {chaves.length === 0 && <tr className="empty"><td colSpan={6}>Nenhuma chave ainda. Clique em Nova chave.</td></tr>}
+            {chaves.length === 0 && (
+              <tr className="empty">
+                <td colSpan={6}>
+                  <div className="empty-state">
+                    <span className="empty-icon"><Icon name="key" size={24} /></span>
+                    <strong>Nenhuma chave ainda</strong>
+                    <span>Crie uma chave para cada sistema que vai mandar mensagens pelo InteliSac.</span>
+                    <button className="primary" onClick={() => setModal("nova")}><Icon name="plus" size={16} />Nova chave</button>
+                  </div>
+                </td>
+              </tr>
+            )}
             {chaves.map((c) => (
               <tr key={c.id} className={c.revokedAt ? "revogada" : ""}>
                 <td><strong>{c.name}</strong></td>
@@ -140,7 +159,7 @@ export default function ApiModulo() {
         <div className="api-fields">
           <div>
             <span>Endereço da API</span>
-            <div className="copy-line"><code>{base}</code><button className="link" onClick={() => copiar(base)}><Icon name="file" size={14} />Copiar</button></div>
+            <div className="copy-line"><code>{base}</code><button className="link" onClick={() => copiar(base)}><Icon name="copy" size={14} />Copiar</button></div>
           </div>
           <div>
             <span>Cabeçalho de cada chamada</span>
@@ -149,7 +168,7 @@ export default function ApiModulo() {
           {whatsapp.map((s) => (
             <div key={s.id}>
               <span>ID da conexão “{s.name}” (serviceId)</span>
-              <div className="copy-line"><code>{s.id}</code><button className="link" onClick={() => copiar(s.id)}><Icon name="file" size={14} />Copiar</button></div>
+              <div className="copy-line"><code>{s.id}</code><button className="link" onClick={() => copiar(s.id)}><Icon name="copy" size={14} />Copiar</button></div>
             </div>
           ))}
         </div>
@@ -170,7 +189,7 @@ export default function ApiModulo() {
 
         <div className="row" style={{ marginTop: 14 }}>
           <strong>Exemplo em Python</strong>
-          <button className="link" onClick={() => copiar(exemplo(base, idConexao), "Exemplo copiado")}><Icon name="file" size={14} />Copiar exemplo</button>
+          <button className="link" onClick={() => copiar(exemplo(base, idConexao), "Exemplo copiado")}><Icon name="copy" size={14} />Copiar exemplo</button>
         </div>
         <pre className="code-box">{exemplo(base, idConexao)}</pre>
 
@@ -305,15 +324,15 @@ function NovaChave({ criada, onCriar, onClose, copiar }) {
     }
   };
   return (
-    <Modal titulo={criada ? "Chave criada" : "Nova chave de API"} onClose={onClose} largura="560px">
+    <Modal titulo={criada ? "Chave criada" : "Nova chave de API"} subtitulo={criada ? undefined : "Dê um nome que diga qual sistema vai usar a chave."} icone={criada ? "check" : "key"} onClose={onClose} largura="560px">
       {criada ? (
         <>
-          <div className="key-warning"><Icon name="ban" size={16} />Copie agora e guarde num lugar seguro: a chave inteira não aparece de novo.</div>
+          <div className="key-warning"><Icon name="alert" size={16} />Copie agora e guarde num lugar seguro: a chave inteira não aparece de novo.</div>
           <label>
             Chave “{criada.name}”
             <div className="copy-line key-show">
               <input readOnly value={criada.key} onFocus={(e) => e.target.select()} />
-              <button className="primary" type="button" onClick={() => copiar(criada.key, "Chave copiada")}><Icon name="file" size={15} />Copiar</button>
+              <button className="primary" type="button" onClick={() => copiar(criada.key, "Chave copiada")}><Icon name="copy" size={15} />Copiar</button>
             </div>
           </label>
           <p className="muted small">Cole no sistema que vai usar (no lugar do token do Digisac). Não mande a chave por WhatsApp ou e-mail.</p>
@@ -356,7 +375,7 @@ function TrocarSenha({ onClose, onOk }) {
     }
   };
   return (
-    <Modal titulo="Trocar a senha do módulo API" onClose={onClose}>
+    <Modal titulo="Trocar a senha do módulo API" icone="lock" onClose={onClose}>
       <form onSubmit={salvar}>
         <label>Senha atual<input type="password" value={atual} onChange={(e) => setAtual(e.target.value)} autoComplete="current-password" autoFocus /></label>
         <label>Senha nova<input type="password" value={nova} onChange={(e) => setNova(e.target.value)} autoComplete="new-password" /></label>

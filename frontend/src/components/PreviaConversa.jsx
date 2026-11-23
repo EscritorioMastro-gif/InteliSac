@@ -5,6 +5,7 @@ import { api } from "../api";
 import { getSocket } from "../socket";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
+import TextoComLinks from "./TextoComLinks";
 
 const QUANTAS = 15;
 const LARGURA = 360;
@@ -51,7 +52,7 @@ function Mensagem({ m, meId, nomeUser }) {
       ) : (
         <>
           {d.file && <Anexo m={m} />}
-          {m.text && <div className="previa-texto">{m.text}</div>}
+          {m.text && <div className="previa-texto"><TextoComLinks texto={m.text} /></div>}
           {!d.file && !m.text && <div className="previa-anexo"><span>[Mensagem]</span></div>}
         </>
       )}

@@ -4,6 +4,8 @@ import { api, resource } from "../api";
 import { getSocket } from "../socket";
 import Modal from "../components/Modal";
 import Icon from "../components/Icon";
+import PageHead from "../components/PageHead";
+import { useConfirm } from "../components/Confirm";
 import { dolares } from "../App";
 
 const TIPOS = [
@@ -40,6 +42,7 @@ export default function Conexoes() {
   const [editando, setEditando] = useState(null);
   const [qrDe, setQrDe] = useState(null);
   const [erro, setErro] = useState("");
+  const confirmar = useConfirm();
 
   const carregar = useCallback(() => {
     api("/services", { params: { perPage: 100 } }).then((r) => setItens(r.data)).catch((e) => setErro(e.message));
@@ -83,7 +86,13 @@ export default function Conexoes() {
   };
 
   const desconectar = async (svc) => {
-    if (!window.confirm(`Desconectar "${svc.name}"? Para voltar será preciso ler o QR code de novo no celular.`)) return;
+    const ok = await confirmar({
+      titulo: `Desconectar “${svc.name}”?`,
+      texto: "As mensagens param de entrar e sair por esta conexão. Para voltar será preciso ler o QR code de novo no celular.",
+      ok: "Desconectar",
+      perigo: true,
+    });
+    if (!ok) return;
     try {
       await api(`/services/${svc.id}/logout`, { method: "POST" });
     } catch (e) {
@@ -92,51 +101,61 @@ export default function Conexoes() {
   };
 
   const svcQr = itens.find((x) => x.id === qrDe);
+  const iconeDe = (s) => (s.type.startsWith("whatsapp") ? "whatsapp" : s.type === "simulador" ? "phone" : "plug");
 
   return (
     <div className="page">
-      <div className="page-head">
-        <h2>Conexões</h2>
+      <PageHead icone="plug" secao="Configurações" titulo="Conexões" contagem={itens.length || null} subtitulo="Uma conexão é compartilhada por todos os atendentes: as mensagens entram e saem por ela em tempo real.">
         <button className="primary" onClick={() => setEditando({ name: "", type: "whatsapp" })}><Icon name="plus" size={16} />Nova conexão</button>
-      </div>
-      <p className="page-sub">Uma conexão é compartilhada por todos os atendentes: as mensagens entram e saem por ela em tempo real.</p>
+      </PageHead>
       {erro && <div className="error" onClick={() => setErro("")}>{erro}</div>}
-      <div className="table-wrap">
-        <table className="table">
-          <thead><tr><th>Nome</th><th>Canal</th><th>Status</th><th>Número</th><th /></tr></thead>
-          <tbody>
-            {itens.length === 0 && <tr className="empty"><td colSpan={5}>Nenhuma conexão. Clique em Nova conexão para ligar o WhatsApp.</td></tr>}
-            {itens.map((s) => {
-              const st = statusDe(s);
-              return (
-                <tr key={s.id}>
-                  <td><span className="row gap"><Icon name={s.type.startsWith("whatsapp") ? "whatsapp" : s.type === "simulador" ? "phone" : "plug"} />{s.name}</span></td>
-                  <td>{TIPOS.find((t) => t.value === s.type)?.label || s.type}</td>
-                  <td>
-                    <span className={`status ${st.cls}`}>{st.label}</span>
-                    {s.data?.status === "disconnected" && MOTIVO[s.data?.reason] && <div className="muted small" style={{ marginTop: 4 }}>{MOTIVO[s.data.reason]}</div>}
-                  </td>
-                  <td>{s.data?.me?.number || <span className="muted">—</span>}</td>
-                  <td className="right">
-                    {s.type === "whatsapp" && s.data?.status !== "connected" && (
-                      <button className="link" onClick={() => conectar(s)}><Icon name="whatsapp" size={15} />{s.data?.status === "qr" ? "Ver QR code" : "Conectar"}</button>
-                    )}
-                    {s.type === "whatsapp" && ["connected", "connecting", "qr"].includes(s.data?.status) && (
-                      <button className="link danger" onClick={() => desconectar(s)}><Icon name="x" size={15} />Desconectar</button>
-                    )}
-                    <button className="link" onClick={() => setEditando(s)}><Icon name="edit" size={15} />Editar</button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {itens.length === 0 ? (
+        <div className="panel">
+          <div className="empty-state">
+            <span className="empty-icon"><Icon name="whatsapp" size={24} /></span>
+            <strong>Nenhuma conexão ainda</strong>
+            <span>Crie uma conexão de WhatsApp e leia o QR code no celular para começar a atender.</span>
+            <button className="primary" onClick={() => setEditando({ name: "", type: "whatsapp" })}><Icon name="plus" size={16} />Nova conexão</button>
+          </div>
+        </div>
+      ) : (
+        <div className="conn-grid">
+          {itens.map((s) => {
+            const st = statusDe(s);
+            return (
+              <article key={s.id} className={`conn-card ${st.cls}`}>
+                <div className="conn-card-top">
+                  <span className="conn-logo"><Icon name={iconeDe(s)} size={22} /></span>
+                  <div className="grow">
+                    <strong className="ellipsis">{s.name}</strong>
+                    <small>{TIPOS.find((t) => t.value === s.type)?.label || s.type}</small>
+                  </div>
+                  <span className={`status ${st.cls}`}>{st.label}</span>
+                </div>
+                <div className="conn-facts">
+                  <div><span>Número</span><b>{s.data?.me?.number || "—"}</b></div>
+                  <div><span>Assinatura</span><b>{s.type.startsWith("whatsapp") ? (s.data?.signMessages === false ? "Desligada" : "Nome do colaborador") : "—"}</b></div>
+                </div>
+                {s.data?.status === "disconnected" && MOTIVO[s.data?.reason] && <p className="conn-reason">{MOTIVO[s.data.reason]}</p>}
+                <div className="conn-actions">
+                  {s.type === "whatsapp" && s.data?.status !== "connected" && (
+                    <button className="primary" onClick={() => conectar(s)}><Icon name="whatsapp" size={16} />{s.data?.status === "qr" ? "Ver QR code" : "Conectar"}</button>
+                  )}
+                  <button onClick={() => setEditando(s)}><Icon name="edit" size={15} />Editar</button>
+                  {s.type === "whatsapp" && ["connected", "connecting", "qr"].includes(s.data?.status) && (
+                    <button className="ghost-danger" onClick={() => desconectar(s)}><Icon name="x" size={15} />Desconectar</button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
 
       <CorretorQuadro />
 
       {qrDe && svcQr && (
-        <Modal titulo={`Conectar WhatsApp — ${svcQr.name}`} onClose={() => setQrDe(null)}>
+        <Modal titulo="Conectar o WhatsApp" subtitulo={svcQr.name} icone="whatsapp" onClose={() => setQrDe(null)}>
           {svcQr.data?.status === "connected" ? (
             <div className="qr-ok">
               <div className="big-check"><Icon name="check" size={28} /></div>
@@ -146,21 +165,27 @@ export default function Conexoes() {
             </div>
           ) : svcQr.data?.status === "qr" && svcQr.data?.qrCode ? (
             <div className="qr-box">
-              <img src={svcQr.data.qrCode} alt="QR code do WhatsApp" />
-              <ol>
-                <li>Abra o WhatsApp no celular do número que vai atender.</li>
-                <li>Toque em <b>Configurações</b> (ou nos três pontinhos) &gt; <b>Aparelhos conectados</b>.</li>
-                <li>Toque em <b>Conectar um aparelho</b> e aponte a câmera para este código.</li>
+              <div className="qr-frame">
+                <img src={svcQr.data.qrCode} alt="QR code do WhatsApp" />
+                <span className="qr-scan" aria-hidden="true" />
+              </div>
+              <ol className="qr-steps">
+                <li><span>Abra o WhatsApp no celular do número que vai atender.</span></li>
+                <li><span>Toque em <b>Configurações</b> (ou nos três pontinhos) &gt; <b>Aparelhos conectados</b>.</span></li>
+                <li><span>Toque em <b>Conectar um aparelho</b> e aponte a câmera para este código.</span></li>
               </ol>
               <p className="muted small">O código muda a cada ~20 segundos sozinho. O Digisac continua funcionando: o InteliSac entra como mais um aparelho.</p>
             </div>
           ) : svcQr.data?.status === "disconnected" ? (
             <div>
               <p>{MOTIVO[svcQr.data?.reason] || "Desconectado."}</p>
-              <button className="primary" onClick={() => conectar(svcQr)}>Gerar novo QR code</button>
+              <div className="modal-actions">
+                <button onClick={() => setQrDe(null)}>Fechar</button>
+                <button className="primary" onClick={() => conectar(svcQr)}><Icon name="whatsapp" size={16} />Gerar novo QR code</button>
+              </div>
             </div>
           ) : (
-            <p className="muted">Gerando QR code…</p>
+            <div className="qr-wait"><span className="spinner" aria-hidden="true" />Gerando o QR code…</div>
           )}
         </Modal>
       )}
@@ -283,9 +308,10 @@ function ConexaoForm({ inicial, onClose, onSave, onArchive }) {
   const [type, setType] = useState(inicial.type || "whatsapp");
   const [assinar, setAssinar] = useState(inicial.data?.signMessages !== false);
   const [erro, setErro] = useState("");
+  const confirmar = useConfirm();
   const ehWhatsapp = type.startsWith("whatsapp");
   return (
-    <Modal titulo={inicial.id ? "Editar conexão" : "Nova conexão"} onClose={onClose}>
+    <Modal titulo={inicial.id ? "Editar conexão" : "Nova conexão"} icone={inicial.id ? "edit" : "plug"} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); onSave({ name, type, ...(ehWhatsapp ? { signMessages: assinar } : {}) }).catch((err) => setErro(err.message)); }}>
         <label>Nome<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: WhatsApp Atendimento" required /></label>
         <label>Canal
@@ -295,17 +321,33 @@ function ConexaoForm({ inicial, onClose, onSave, onArchive }) {
         </label>
         {ehWhatsapp && (
           <>
-            <label className="check" style={{ margin: "12px 0 2px" }}>
-              <input type="checkbox" checked={assinar} onChange={(e) => setAssinar(e.target.checked)} /> Assinar mensagens com o nome do colaborador
+            <label className="switch-row">
+              <input type="checkbox" checked={assinar} onChange={(e) => setAssinar(e.target.checked)} />
+              <span className="switch" aria-hidden="true" />
+              <span className="grow">
+                Assinar mensagens com o nome do colaborador
+                <span className="field-hint">O cliente recebe: <b>*Gabriel:*</b> Bom dia… (o nome aparece em negrito no WhatsApp)</span>
+              </span>
             </label>
-            <p className="muted small" style={{ margin: "0 0 4px 24px" }}>O cliente recebe: <b>*Gabriel:*</b> Bom dia… (o nome aparece em negrito no WhatsApp)</p>
           </>
         )}
         {erro && <div className="error">{erro}</div>}
         <div className="modal-actions">
-          {onArchive && <button type="button" className="link danger" onClick={() => window.confirm("Arquivar esta conexão?") && onArchive().catch((e) => setErro(e.message))}>Arquivar</button>}
+          {onArchive && (
+            <button
+              type="button"
+              className="link danger"
+              onClick={async () => {
+                const ok = await confirmar({ titulo: "Arquivar esta conexão?", texto: "Ela some da lista e para de receber mensagens.", ok: "Arquivar", perigo: true });
+                if (ok) onArchive().catch((e) => setErro(e.message));
+              }}
+            >
+              <Icon name="archive" size={15} />Arquivar
+            </button>
+          )}
+          <span className="spacer" />
           <button type="button" onClick={onClose}>Cancelar</button>
-          <button className="primary">{inicial.id ? "Salvar" : "Criar e conectar"}</button>
+          <button className="primary"><Icon name={inicial.id ? "check" : "whatsapp"} size={16} />{inicial.id ? "Salvar" : ehWhatsapp ? "Criar e conectar" : "Criar"}</button>
         </div>
       </form>
     </Modal>

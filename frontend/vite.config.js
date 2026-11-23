@@ -5,6 +5,10 @@ import react from "@vitejs/plugin-react";
 // Portas escolhidas para não colidir com o sistema-extrato-dominio (5173/8000).
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Fontes sempre como arquivo: a CSP da tela (font-src 'self') não aceita fonte embutida em data:
+    assetsInlineLimit: (arquivo) => (/\.(woff2?|ttf|otf)$/i.test(arquivo) ? false : undefined),
+  },
   server: {
     port: 5180,
     strictPort: true,

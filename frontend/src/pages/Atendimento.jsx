@@ -11,7 +11,10 @@ import Midia, { MAX_ARQUIVO, MAX_ARQUIVO_MB, fmtBytes } from "../components/Midi
 import ContadorEspera, { esperaDesde } from "../components/ContadorEspera";
 import PreviaConversa from "../components/PreviaConversa";
 import EmojiPicker from "../components/EmojiPicker";
+import TextoComLinks from "../components/TextoComLinks";
 import { useToast } from "../components/Toast";
+import { useConfirm } from "../components/Confirm";
+import { corDoTexto, fmtNumero } from "../formato";
 
 const ABAS = [
   { id: "mine", label: "Meus", count: "myTickets" },
@@ -22,10 +25,12 @@ const ABAS = [
 
 const VAZIO = {
   mine: "Nenhuma conversa com você agora. Veja a aba Fila para assumir um atendimento.",
-  queue: "Fila vazia: nenhum cliente esperando atendimento.",
+  queue: "Nenhum cliente esperando atendimento.",
   open: "Nenhum chamado aberto no momento.",
   all: "Nenhum contato encontrado.",
 };
+
+const TITULO_VAZIO = { mine: "Tudo em dia", queue: "Fila vazia", open: "Nada aberto", all: "Nenhum contato" };
 
 const hora = (iso) => (iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "");
 
@@ -70,14 +75,6 @@ function corDe(chave) {
   return CORES_GRUPO[h % CORES_GRUPO.length];
 }
 
-// Texto escuro em tag de cor clara (amarelo, verde-claro...) e branco nas escuras
-function corDoTexto(hex) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
-  if (!m) return "#fff";
-  const n = parseInt(m[1], 16);
-  return 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 165 ? "#17282b" : "#fff";
-}
-
 // Tags do contato em miniatura (na lista mostra até `max` e "+N")
 function TagsMini({ ids, tags, max = 2 }) {
   const lista = (ids || []).map((id) => tags.find((t) => t.id === id)).filter(Boolean);
@@ -94,16 +91,6 @@ function TagsMini({ ids, tags, max = 2 }) {
 }
 
 
-// 5516991452133 → +55 16 99145-2133
-function fmtNumero(n) {
-  const d = String(n || "").replace(/\D/g, "");
-  if (d.startsWith("55") && (d.length === 12 || d.length === 13)) {
-    const local = d.slice(4);
-    return `+55 ${d.slice(2, 4)} ${local.slice(0, local.length - 4)}-${local.slice(-4)}`;
-  }
-  return d ? `+${d}` : "";
-}
-
 // O WhatsApp só deixa editar até 15 minutos depois do envio
 const LIMITE_EDICAO_MS = 15 * 60 * 1000;
 
@@ -115,6 +102,7 @@ const primeiroNome = (nome) => String(nome || "").trim().split(/\s+/)[0] || "";
 export default function Atendimento() {
   const me = useMe();
   const toast = useToast();
+  const confirmar = useConfirm();
   const [params, setParams] = useSearchParams();
   const [aba, setAba] = useState("mine");
   const [busca, setBusca] = useState("");
@@ -163,6 +151,22 @@ export default function Atendimento() {
   const selRef = useRef(selId);
   selRef.current = selId;
   const contatoDaUrl = idDaUrl(params);
+  // rolagem da conversa: só desce sozinha se você já estava no fim (senão aparece "↓ N novas")
+  const listaMsgRef = useRef(null);
+  const noFimRef = useRef(true);
+  const pularProFimRef = useRef(true);
+  const [longeDoFim, setLongeDoFim] = useState(false);
+  const [novasAbaixo, setNovasAbaixo] = useState(0);
+  // rascunho por conversa: o que você escreveu numa conversa não vai junto para a outra
+  const rascunhosRef = useRef(new Map());
+  const selAnteriorRef = useRef(selId);
+  const estadoRef = useRef({});
+  estadoRef.current = { texto, editando, rascunho };
+  const contatosRef = useRef([]);
+  contatosRef.current = contatos;
+  const contatoRef = useRef(null);
+  contatoRef.current = contato;
+  const mostrandoConversa = !!contato && contato.id === selId;
 
   // Clique na notificação muda o ?contact= da página: abre essa conversa
   useEffect(() => {
@@ -179,8 +183,15 @@ export default function Atendimento() {
 
   const carregarConversa = useCallback((id) => {
     if (!id) return;
-    api(`/contacts/${id}`).then(setContato).catch((e) => toast.show(e.message, "error"));
+    // clicou em outra conversa antes de esta carregar: a resposta atrasada é ignorada
+    api(`/contacts/${id}`)
+      .then((c) => id === selRef.current && setContato(c))
+      .catch((e) => {
+        toast.show(e.message, "error");
+        if (id === selRef.current && contatoRef.current?.id !== id) setSelId(null);
+      });
     api("/messages", { params: { contactId: id, perPage: 100 } }).then((r) => {
+      if (id !== selRef.current) return;
       mensagensEm.current = Date.now();
       setMensagens(r.data);
     });
@@ -237,16 +248,33 @@ export default function Atendimento() {
   }, [aba]);
 
   useEffect(() => {
+    const anterior = selAnteriorRef.current;
+    if (anterior !== selId) {
+      const st = estadoRef.current;
+      const escrito = (st.editando ? st.rascunho : st.texto) || "";
+      if (anterior) {
+        if (escrito.trim()) rascunhosRef.current.set(anterior, escrito);
+        else rascunhosRef.current.delete(anterior);
+      }
+      setTexto(selId ? rascunhosRef.current.get(selId) || "" : "");
+      setRascunho("");
+      selAnteriorRef.current = selId;
+    }
     setRespondendo(null);
     setEditando(null);
     setSelecionadas(null);
     setCorrecao(null);
     setEmojiAberto(false);
+    setNovasAbaixo(0);
+    setLongeDoFim(false);
+    noFimRef.current = true;
+    pularProFimRef.current = true;
     if (!selId) {
       setContato(null);
       setMensagens([]);
       return;
     }
+    setMensagens([]);
     carregarConversa(selId);
     api(`/contacts/${selId}/mark-read`, { method: "POST" }).catch(() => {});
   }, [selId, carregarConversa]);
@@ -267,7 +295,7 @@ export default function Atendimento() {
       recarregar();
     };
     const onTicket = (tk) => {
-      if (tk.contactId === selRef.current) api(`/contacts/${tk.contactId}`).then(setContato);
+      if (tk.contactId === selRef.current) api(`/contacts/${tk.contactId}`).then((c) => c.id === selRef.current && setContato(c));
       recarregar();
     };
     // Mensagem alterada (ex.: apagada pelo cliente ou por um colega): troca na conversa aberta
@@ -299,10 +327,50 @@ export default function Atendimento() {
     };
   }, [carregarLista]);
 
-  // Desce até a última mensagem quando chega/sai mensagem nova (não quando uma é só alterada)
+  // Desce até a última mensagem quando a conversa abre ou chega mensagem nova (não quando uma é só
+  // alterada). Se você está lendo mais acima, não pula: o botão "↓" mostra quantas chegaram.
+  const descer = (suave = false) => {
+    const el = listaMsgRef.current;
+    if (!el) return;
+    if (suave) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    else el.scrollTop = el.scrollHeight;
+  };
+  const ultima = mensagens[mensagens.length - 1];
+  const ultimaId = ultima?.id;
+  const ultimaEhMinha = !!ultima?.isFromMe && ultima?.userId === me.id;
+  const ultimaEhEvento = ultima?.type === "ticket";
   useEffect(() => {
-    fimRef.current?.scrollIntoView({ block: "end" });
-  }, [mensagens.length, selId]);
+    if (!ultimaId || !mostrandoConversa) return;
+    if (pularProFimRef.current || noFimRef.current || ultimaEhMinha) {
+      pularProFimRef.current = false;
+      noFimRef.current = true;
+      descer();
+      setNovasAbaixo(0);
+    } else if (!ultimaEhEvento) {
+      setNovasAbaixo((n) => n + 1);
+    }
+  }, [ultimaId, mostrandoConversa]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Foto ou vídeo que termina de carregar muda a altura: continua no fim se você estava lá
+  useEffect(() => {
+    const el = listaMsgRef.current;
+    if (!el) return undefined;
+    const carregou = () => noFimRef.current && descer();
+    el.addEventListener("load", carregou, true);
+    el.addEventListener("loadedmetadata", carregou, true);
+    return () => {
+      el.removeEventListener("load", carregou, true);
+      el.removeEventListener("loadedmetadata", carregou, true);
+    };
+  }, [mostrandoConversa]);
+
+  const aoRolar = (e) => {
+    const el = e.currentTarget;
+    const perto = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    noFimRef.current = perto;
+    setLongeDoFim(!perto);
+    if (perto) setNovasAbaixo(0);
+  };
 
   // Contador da gravação de áudio
   useEffect(() => {
@@ -331,6 +399,36 @@ export default function Atendimento() {
   const selecionar = (id) => {
     setSelId(id);
     setParams(id ? { contact: id } : {});
+  };
+  const selecionarRef = useRef(selecionar);
+  selecionarRef.current = selecionar;
+
+  // Alt+↑ / Alt+↓: conversa de cima / de baixo na lista, sem tirar a mão do teclado
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+      if (document.querySelector(".modal, .cmd")) return;
+      const lista = contatosRef.current;
+      if (!lista.length) return;
+      e.preventDefault();
+      const i = lista.findIndex((c) => c.id === selRef.current);
+      const j = i < 0 ? 0 : e.key === "ArrowDown" ? Math.min(i + 1, lista.length - 1) : Math.max(i - 1, 0);
+      if (lista[j].id !== selRef.current) selecionarRef.current(lista[j].id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // a conversa aberta fica visível na lista (ex.: depois de Alt+↓)
+  useEffect(() => {
+    if (selId) document.querySelector(".chat-list li.sel")?.scrollIntoView({ block: "nearest" });
+  }, [selId]);
+
+  const trocarAba = (id) => {
+    if (id === aba) return;
+    setCarregandoLista(true);
+    setContatos([]);
+    setAba(id);
   };
 
   // Marcar como não lida (igual ao WhatsApp): se a conversa está aberta, sai dela,
@@ -571,7 +669,7 @@ export default function Atendimento() {
   const conversarCom = async (c, numero) => {
     try {
       const r = await api("/contacts/start", { method: "POST", body: { serviceId: contato.serviceId, number: numero, name: c.name || undefined } });
-      setAba("all");
+      trocarAba("all");
       selecionar(r.id);
       toast.show(r.created ? `Contato ${r.name} criado. Escreva a primeira mensagem.` : `Conversa com ${r.internalName || r.name}`);
     } catch (e) {
@@ -593,7 +691,13 @@ export default function Atendimento() {
     Date.now() - new Date(m.createdAt).getTime() < 60 * 3600 * 1000;
 
   const apagar = async (m) => {
-    if (!window.confirm("Apagar esta mensagem para todos? O cliente também deixa de ver.")) return;
+    const ok = await confirmar({
+      titulo: "Apagar para todos?",
+      texto: "O cliente também deixa de ver a mensagem. A equipe continua vendo que ela foi apagada.",
+      ok: "Apagar",
+      perigo: true,
+    });
+    if (!ok) return;
     try {
       const atualizada = await api(`/messages/${m.id}`, { method: "DELETE" });
       setMensagens((prev) => prev.map((x) => (x.id === atualizada.id ? atualizada : x)));
@@ -813,14 +917,28 @@ export default function Atendimento() {
     <div className={`chat ${selId ? "has-selection" : ""}`}>
       <section className="chat-list">
         <div className="chat-list-head">
-          <h2>Atendimento</h2>
+          <div className="chat-list-title">
+            <h2>Atendimento</h2>
+            {contagens.queueTickets > 0 && aba !== "queue" && (
+              <button type="button" className="chip chip-btn warn-chip" onClick={() => trocarAba("queue")} title="Ver quem está esperando na fila">
+                <Icon name="clock" size={12} />{contagens.queueTickets} na fila
+              </button>
+            )}
+          </div>
           <div className="search-box">
             <Icon name="search" size={16} />
-            <input placeholder="Buscar nome ou número" value={busca} onChange={(e) => setBusca(e.target.value)} aria-label="Buscar conversa" />
+            <input
+              placeholder="Buscar nome ou número"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setBusca("")}
+              aria-label="Buscar conversa"
+            />
+            {busca && <button type="button" className="icon-btn search-clear" onClick={() => setBusca("")} aria-label="Limpar busca" title="Limpar busca (Esc)"><Icon name="x" size={15} /></button>}
           </div>
           <div className="tabs" role="tablist">
             {ABAS.map((a) => (
-              <button key={a.id} role="tab" aria-selected={aba === a.id} className={aba === a.id ? "active" : ""} onClick={() => setAba(a.id)}>
+              <button key={a.id} role="tab" aria-selected={aba === a.id} className={aba === a.id ? "active" : ""} onClick={() => trocarAba(a.id)}>
                 {a.label}
                 {a.count && contagens[a.count] > 0 && <span className="count">{contagens[a.count]}</span>}
               </button>
@@ -828,14 +946,33 @@ export default function Atendimento() {
           </div>
         </div>
         <ul onScroll={fecharPrevia}>
+          {carregandoLista &&
+            [0, 1, 2, 3, 4, 5].map((i) => (
+              <li key={`sk${i}`} className="sk-item" aria-hidden="true">
+                <span className="sk sk-circle" style={{ width: 40, height: 40 }} />
+                <div className="grow">
+                  <span className="sk sk-line" style={{ width: `${55 + ((i * 13) % 30)}%`, height: 11 }} />
+                  <span className="sk sk-line" style={{ width: `${70 + ((i * 7) % 25)}%` }} />
+                </div>
+              </li>
+            ))}
           {!carregandoLista && contatos.length === 0 && (
-            <li className="chat-empty" style={{ cursor: "default" }}>
-              <Icon name="inbox" size={28} />
-              <span>{busca ? "Nenhuma conversa encontrada para essa busca." : VAZIO[aba]}</span>
+            <li className="chat-empty">
+              <div className="empty-state">
+                <span className="empty-icon"><Icon name={busca ? "search" : aba === "mine" || aba === "queue" ? "check" : "inbox"} size={24} /></span>
+                <strong>{busca ? "Nada encontrado" : TITULO_VAZIO[aba]}</strong>
+                <span>{busca ? "Nenhuma conversa para essa busca." : VAZIO[aba]}</span>
+                {busca ? (
+                  <button type="button" onClick={() => setBusca("")}>Limpar busca</button>
+                ) : aba === "mine" && contagens.queueTickets > 0 ? (
+                  <button type="button" className="primary" onClick={() => trocarAba("queue")}><Icon name="clock" size={15} />Ver a fila ({contagens.queueTickets})</button>
+                ) : null}
+              </div>
             </li>
           )}
           {contatos.map((c) => {
             const quem = quemMandou(c);
+            const rascunhoDela = c.id !== selId ? rascunhosRef.current.get(c.id) : null;
             return (
             <li
               key={c.id}
@@ -869,8 +1006,14 @@ export default function Atendimento() {
                 </div>
                 <div className="row" style={{ marginTop: 2 }}>
                   <span className="muted ellipsis preview">
-                    {quem && !ehAvisoInterno(c.lastMessage) && <span className="quem" title={quem.dica}>{quem.rotulo}: </span>}
-                    {(!ehAvisoInterno(c.lastMessage) && c.lastMessage) || c.data?.number}
+                    {rascunhoDela ? (
+                      <><span className="draft" title="Você começou a escrever e não enviou">Rascunho: </span>{rascunhoDela}</>
+                    ) : (
+                      <>
+                        {quem && !ehAvisoInterno(c.lastMessage) && <span className="quem" title={quem.dica}>{quem.rotulo}: </span>}
+                        {(!ehAvisoInterno(c.lastMessage) && c.lastMessage) || c.data?.number}
+                      </>
+                    )}
                   </span>
                   <ContadorEspera c={c} agora={agora} />
                 </div>
@@ -900,35 +1043,64 @@ export default function Atendimento() {
         }}
       >
         {arrastando && <div className="drop-overlay"><Icon name="paperclip" size={28} />Solte para enviar para {contato?.internalName || contato?.name}</div>}
-        {!contato ? (
+        {!selId ? (
           <div className="chat-placeholder">
-            <div className="big-icon"><Icon name="chat" size={30} /></div>
+            <div className="big-icon"><Icon name="chat" size={34} /></div>
             <strong>Selecione uma conversa</strong>
             <span>As mensagens novas aparecem aqui em tempo real.</span>
+            <div className="placeholder-tips">
+              <div><span>Buscar conversa, tela ou ação</span><span><kbd>Ctrl</kbd><kbd>K</kbd></span></div>
+              <div><span>Conversa de cima / de baixo</span><span><kbd>Alt</kbd><kbd>↑</kbd><kbd>↓</kbd></span></div>
+              <div><span>Respostas rápidas no campo</span><span><kbd>/</kbd></span></div>
+            </div>
           </div>
+        ) : !mostrandoConversa ? (
+          <>
+            <header className="chat-head" aria-busy="true">
+              <div className="who">
+                <button className="icon-btn back-btn" onClick={() => selecionar(null)} aria-label="Voltar para a lista"><Icon name="arrowLeft" /></button>
+                <span className="sk sk-circle" style={{ width: 42, height: 42 }} />
+                <div className="who-text" style={{ display: "grid", gap: 9 }}>
+                  <span className="sk sk-line" style={{ width: 190, height: 13 }} />
+                  <span className="sk sk-line" style={{ width: 280, maxWidth: "100%" }} />
+                </div>
+              </div>
+            </header>
+            <div className="sk-chat" aria-label="Carregando a conversa">
+              {[38, 62, 45, 30, 55].map((w, i) => (
+                <span key={i} className={`sk sk-bubble ${i % 2 ? "me" : ""}`} style={{ width: `${w}%` }} />
+              ))}
+            </div>
+          </>
         ) : (
           <>
             <header className="chat-head">
               <div className="who">
                 <button className="icon-btn back-btn" onClick={() => selecionar(null)} aria-label="Voltar para a lista"><Icon name="arrowLeft" /></button>
-                <Avatar nome={contato.internalName || contato.name} size={40} url={contato.avatarUrl} grupo={contato.isGroup} />
-                <div style={{ minWidth: 0 }}>
-                  <strong className="ellipsis">{contato.internalName || contato.name}</strong>{" "}
-                  {contato.isGroup ? <span className="chip"><Icon name="users" size={12} />Grupo do WhatsApp</span> : <span className="muted small">{contato.data?.number}</span>}
+                <Avatar nome={contato.internalName || contato.name} size={42} url={contato.avatarUrl} grupo={contato.isGroup} />
+                <div className="who-text">
+                  <div className="who-line">
+                    <strong className="ellipsis">{contato.internalName || contato.name}</strong>
+                    {contato.isGroup ? <span className="chip"><Icon name="users" size={12} />Grupo do WhatsApp</span> : <span className="who-number">{fmtNumero(contato.data?.number) || contato.data?.number}</span>}
+                  </div>
                   <div className="meta">
-                    <TagsMini ids={contato.tagIds} tags={tags} max={4} />
-                    <button type="button" className="chip chip-btn" onClick={() => setModal("tags")} title="Escolher as tags deste contato">
-                      <Icon name="tag" size={12} />{contato.tagIds?.length ? "Editar" : "Tags"}
-                    </button>
                     {ticket ? (
                       <>
-                        <span className="chip" title="Protocolo do chamado">#{ticket.protocol}</span>
-                        <span className="chip">{nomeDep(ticket.departmentId)}</span>
-                        {ticket.userId ? <span className="chip"><Icon name="user" size={12} />{nomeUser(ticket.userId)}</span> : <span className="chip warn"><Icon name="clock" size={12} />Na fila</span>}
+                        <span className="chip mono" title="Protocolo do chamado">#{ticket.protocol}</span>
+                        <span className="chip" title="Departamento"><Icon name="building" size={12} />{nomeDep(ticket.departmentId)}</span>
+                        {ticket.userId ? (
+                          <span className={`chip ${ticket.userId === me.id ? "ok" : ""}`} title={`Atendente: ${nomeUser(ticket.userId)}`}><Icon name="user" size={12} />{ticket.userId === me.id ? "Com você" : nomeUser(ticket.userId)}</span>
+                        ) : (
+                          <span className="chip warn"><Icon name="clock" size={12} />Na fila</span>
+                        )}
                       </>
                     ) : (
-                      <span className="muted small">Sem chamado aberto</span>
+                      <span className="chip chip-soft">Sem chamado aberto</span>
                     )}
+                    <TagsMini ids={contato.tagIds} tags={tags} max={4} />
+                    <button type="button" className="chip chip-btn" onClick={() => setModal("tags")} title="Escolher as tags deste contato">
+                      <Icon name={contato.tagIds?.length ? "edit" : "plus"} size={12} />{contato.tagIds?.length ? "Tags" : "Tag"}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -936,12 +1108,12 @@ export default function Atendimento() {
                 {ticket ? (
                   <>
                     {ticket.userId !== me.id && (
-                      <button className="primary" onClick={() => acao(() => api(`/contacts/${selId}/ticket/transfer`, { method: "POST", body: { departmentId: ticket.departmentId, userId: me.id } }), "Chamado assumido por você")}>
+                      <button className="primary" onClick={() => acao(() => api(`/contacts/${selId}/ticket/transfer`, { method: "POST", body: { departmentId: ticket.departmentId, userId: me.id } }), "Chamado assumido por você")} title="Passar este chamado para você">
                         <Icon name="check" size={16} /><span>Assumir</span>
                       </button>
                     )}
-                    <button onClick={() => setModal("transferir")}><Icon name="transfer" size={16} /><span>Transferir</span></button>
-                    <button className="ghost-danger" onClick={() => setModal("fechar")}><Icon name="x" size={16} /><span>Fechar</span></button>
+                    <button onClick={() => setModal("transferir")} title="Mudar o departamento ou o atendente"><Icon name="transfer" size={16} /><span>Transferir</span></button>
+                    <button className="ghost-danger" onClick={() => setModal("fechar")} title="Encerrar o atendimento"><Icon name="x" size={16} /><span>Fechar</span></button>
                   </>
                 ) : (
                   <button className="primary" onClick={() => acao(() => api(`/contacts/${selId}/ticket/open`, { method: "POST", body: {} }), "Chamado aberto")}>
@@ -958,7 +1130,8 @@ export default function Atendimento() {
               </div>
             </header>
 
-            <div className={`messages ${selecionadas ? "selecting" : ""}`}>
+            <div className="messages-wrap">
+            <div className={`messages ${selecionadas ? "selecting" : ""}`} ref={listaMsgRef} onScroll={aoRolar}>
               {itens.map((m) => {
                 if (m.sep) return <div key={m.id} className="day-sep">{m.sep}</div>;
                 if (m.type === "ticket") {
@@ -1043,7 +1216,7 @@ export default function Atendimento() {
                             ))}
                           </div>
                         ) : (
-                          m.text && <div className="text">{m.text}</div>
+                          m.text && <div className="text"><TextoComLinks texto={m.text} /></div>
                         )}
                         {m.data?.fileError && <div className="fail small">Arquivo não pôde ser salvo ({m.data.fileError})</div>}
                       </>
@@ -1058,6 +1231,22 @@ export default function Atendimento() {
                 );
               })}
               <div ref={fimRef} />
+            </div>
+            {longeDoFim && (
+              <button
+                type="button"
+                className="jump-end"
+                onClick={() => {
+                  descer(true);
+                  setNovasAbaixo(0);
+                }}
+                title={novasAbaixo ? `${novasAbaixo} ${novasAbaixo === 1 ? "mensagem nova" : "mensagens novas"}: ir para o fim` : "Ir para a última mensagem"}
+                aria-label="Ir para a última mensagem"
+              >
+                <Icon name="arrowDown" size={19} />
+                {novasAbaixo > 0 && <span className="jump-count">{novasAbaixo}</span>}
+              </button>
+            )}
             </div>
 
             {selecionadas ? (
@@ -1104,15 +1293,22 @@ export default function Atendimento() {
             {gravando ? (
               <div className="composer recording">
                 <button type="button" className="icon-btn" onClick={descartarGravacao} title="Descartar gravação" aria-label="Descartar gravação"><Icon name="trash" size={20} /></button>
-                <span className="rec-dot" aria-hidden="true" />
-                <span className="rec-time">{fmtTempo(tempoGravacao)}</span>
-                <span className="muted grow">Gravando… clique na seta para enviar</span>
-                <button type="button" className="primary" onClick={enviarGravacao} title="Enviar áudio" aria-label="Enviar áudio"><Icon name="send" size={17} /></button>
+                <div className="rec-box" role="status">
+                  <span className="rec-dot" aria-hidden="true" />
+                  <span className="rec-time">{fmtTempo(tempoGravacao)}</span>
+                  <span className="rec-wave" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+                  <span className="muted grow ellipsis">Gravando… clique na seta para enviar</span>
+                </div>
+                <button type="button" className="primary send-btn" onClick={enviarGravacao} title="Enviar áudio" aria-label="Enviar áudio"><Icon name="send" size={17} /></button>
               </div>
             ) : (
-            <form className="composer" onSubmit={enviar}>
+            <form className={`composer ${editando ? "is-editing" : ""}`} onSubmit={enviar}>
               {sugestoes.length > 0 && (
-                <ul className="suggestions" role="listbox">
+                <ul className="suggestions" role="listbox" aria-label="Respostas rápidas">
+                  <li className="suggestions-head" role="presentation">
+                    <span>Respostas rápidas</span>
+                    <span><kbd>↑</kbd><kbd>↓</kbd> escolher · <kbd>Enter</kbd> usar</span>
+                  </li>
                   {sugestoes.map((r, i) => (
                     <li key={r.id} role="option" aria-selected={i === sugIdx} className={i === sugIdx ? "sel" : ""} onMouseDown={(e) => { e.preventDefault(); usarSugestao(r); }}>
                       <strong>/{r.title}</strong><span className="muted">{r.text}</span>
@@ -1131,6 +1327,7 @@ export default function Atendimento() {
                 }}
               />
               {emojiAberto && <EmojiPicker onEscolher={inserirEmoji} onFechar={fecharEmoji} />}
+              <div className="composer-box">
               <button
                 type="button"
                 className={`icon-btn attach-btn emoji-btn ${emojiAberto ? "on" : ""}`}
@@ -1148,7 +1345,7 @@ export default function Atendimento() {
               )}
               <textarea
                 ref={textoRef}
-                placeholder={editando ? "Texto novo da mensagem…" : "Escreva uma mensagem…  ( / para respostas rápidas · Shift+Enter quebra linha )"}
+                placeholder={editando ? "Texto novo da mensagem…" : `Mensagem para ${contato.isGroup ? "o grupo" : nomeContato}…`}
                 value={texto}
                 onChange={(e) => setTexto(e.target.value)}
                 onKeyDown={onKeyDown}
@@ -1158,22 +1355,28 @@ export default function Atendimento() {
               />
               {texto.trim() && !texto.startsWith("/") && (
                 <button type="button" className="fix-btn" onClick={corrigirTexto} disabled={corrigindo || enviando} title="Corrigir meu texto: ortografia e pontuação (você confere antes de enviar)">
-                  <Icon name="wand" size={17} /><span>{corrigindo ? "Corrigindo…" : "Corrigir"}</span>
+                  <Icon name="wand" size={16} /><span>{corrigindo ? "Corrigindo…" : "Corrigir"}</span>
                 </button>
               )}
+              </div>
               {editando ? (
-                <button className="primary" disabled={enviando || !texto.trim()} title="Salvar edição (Enter)" aria-label="Salvar edição">
+                <button className="primary send-btn" disabled={enviando || !texto.trim()} title="Salvar edição (Enter)" aria-label="Salvar edição">
                   <Icon name="check" size={18} />
                 </button>
               ) : texto.trim() ? (
-                <button className="primary" disabled={enviando} title="Enviar (Enter)" aria-label="Enviar">
+                <button className="primary send-btn" disabled={enviando} title="Enviar (Enter)" aria-label="Enviar">
                   <Icon name="send" size={17} />
                 </button>
               ) : (
-                <button type="button" className="primary" onClick={iniciarGravacao} disabled={enviandoAudio} title="Gravar mensagem de voz" aria-label="Gravar áudio">
+                <button type="button" className="primary send-btn" onClick={iniciarGravacao} disabled={enviandoAudio} title="Gravar mensagem de voz" aria-label="Gravar áudio">
                   <Icon name="mic" size={18} />
                 </button>
               )}
+              <div className="composer-hint" aria-hidden="true">
+                <span><kbd>Enter</kbd> envia</span>
+                <span><kbd>Shift</kbd><kbd>Enter</kbd> nova linha</span>
+                <span><kbd>/</kbd> respostas rápidas</span>
+              </div>
             </form>
             )}
             </>
@@ -1230,7 +1433,7 @@ export default function Atendimento() {
       )}
 
       {imagemAberta && (
-        <Modal titulo={imagemAberta.data?.file?.name || "Imagem"} onClose={() => setImagemAberta(null)} largura="min(92vw, 1100px)">
+        <Modal titulo={imagemAberta.data?.file?.name || "Imagem"} icone="image" onClose={() => setImagemAberta(null)} largura="min(92vw, 1100px)">
           <div className="lightbox">
             <img src={imagemAberta.fileUrl} alt={imagemAberta.data?.file?.name || ""} />
           </div>
@@ -1243,7 +1446,7 @@ export default function Atendimento() {
       )}
 
       {pdfAberto && (
-        <Modal titulo={pdfAberto.data?.file?.name || "PDF"} onClose={() => setPdfAberto(null)} largura="min(96vw, 1100px)">
+        <Modal titulo={pdfAberto.data?.file?.name || "PDF"} icone="file" onClose={() => setPdfAberto(null)} largura="min(96vw, 1100px)">
           <iframe
             className="pdf-quadro"
             src={`${pdfAberto.fileUrl}#view=FitH`}
@@ -1265,6 +1468,7 @@ export default function Atendimento() {
         <TransferirModal
           deps={deps}
           usuarios={usuarios}
+          meId={me.id}
           atual={ticket}
           onClose={() => setModal(null)}
           onOk={async (body) => {
@@ -1315,18 +1519,28 @@ function TagsModal({ tags, atuais, nome, onClose, onOk }) {
     }
   };
   return (
-    <Modal titulo={`Tags de ${nome}`} onClose={onClose}>
-      <div className="checks tag-checks">
-        {tags.length === 0 && <span className="muted small">Nenhuma tag cadastrada ainda (menu Tags).</span>}
-        {tags.map((t) => (
-          <label key={t.id} className="check">
-            <input type="checkbox" checked={sel.includes(t.id)} onChange={() => toggle(t.id)} />
-            <span className="tag-mini" style={{ background: t.color, color: corDoTexto(t.color) }}>{t.label}</span>
-          </label>
-        ))}
+    <Modal titulo="Tags do contato" subtitulo={nome} icone="tag" onClose={onClose}>
+      <div className="toggle-chips" role="group" aria-label="Tags">
+        {tags.length === 0 && <span className="toggle-empty">Nenhuma tag cadastrada ainda (Configurações → Tags).</span>}
+        {tags.map((t) => {
+          const on = sel.includes(t.id);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              aria-pressed={on}
+              className={`toggle-chip ${on ? "on" : ""}`}
+              style={on ? { background: t.color, borderColor: t.color, color: corDoTexto(t.color) } : undefined}
+              onClick={() => toggle(t.id)}
+            >
+              {on ? <Icon name="check" size={14} /> : <span className="dot" style={{ background: t.color }} />}{t.label}
+            </button>
+          );
+        })}
       </div>
       {erro && <div className="error">{erro}</div>}
       <div className="modal-actions">
+        <span className="muted small spacer">{sel.length === 1 ? "1 tag marcada" : `${sel.length} tags marcadas`}</span>
         <button onClick={onClose}>Cancelar</button>
         <button className="primary" disabled={salvando} onClick={salvar}><Icon name="check" size={16} />{salvando ? "Salvando…" : "Salvar"}</button>
       </div>
@@ -1375,7 +1589,7 @@ function EncaminharModal({ quantidade, onClose, onOk }) {
   };
 
   return (
-    <Modal titulo={`Encaminhar ${quantidade === 1 ? "1 mensagem" : `${quantidade} mensagens`}`} onClose={enviando ? () => {} : onClose} largura="520px">
+    <Modal titulo={`Encaminhar ${quantidade === 1 ? "1 mensagem" : `${quantidade} mensagens`}`} subtitulo="Escolha até 10 conversas" icone="forward" onClose={enviando ? () => {} : onClose} largura="520px">
       <div className="search-box">
         <Icon name="search" size={16} />
         <input autoFocus placeholder="Buscar conversa por nome ou número" value={busca} onChange={(e) => setBusca(e.target.value)} aria-label="Buscar conversa" />
@@ -1395,7 +1609,7 @@ function EncaminharModal({ quantidade, onClose, onOk }) {
           const marcado = escolhidos.some((x) => x.id === c.id);
           return (
             <li key={c.id} className={marcado ? "sel" : ""} onClick={() => toggle(c)}>
-              <input type="checkbox" checked={marcado} readOnly tabIndex={-1} aria-hidden="true" />
+              <span className={`sel-check static ${marcado ? "on" : ""}`} aria-hidden="true">{marcado && <Icon name="check" size={13} />}</span>
               <Avatar nome={c.internalName || c.name} url={c.avatarUrl} grupo={c.isGroup} size={32} />
               <div className="grow" style={{ minWidth: 0 }}>
                 <strong className="ellipsis" style={{ display: "block" }}>{c.internalName || c.name}</strong>
@@ -1439,7 +1653,7 @@ function AnexoModal({ arquivos, destino, legendaInicial, onClose, onEnviar }) {
   };
 
   return (
-    <Modal titulo={`Enviar ${arquivos.length > 1 ? `${arquivos.length} arquivos` : "arquivo"} para ${destino || "o contato"}`} onClose={enviando ? () => {} : onClose} largura="560px">
+    <Modal titulo={`Enviar ${arquivos.length > 1 ? `${arquivos.length} arquivos` : "arquivo"}`} subtitulo={`Para ${destino || "o contato"}`} icone="paperclip" onClose={enviando ? () => {} : onClose} largura="560px">
       <div className="anexos">
         {arquivos.map((f, i) => (
           <div key={i} className="anexo">
@@ -1476,13 +1690,18 @@ function AnexoModal({ arquivos, destino, legendaInicial, onClose, onEnviar }) {
   );
 }
 
-function TransferirModal({ deps, usuarios, atual, onClose, onOk }) {
+const STATUS_ATENDENTE = { online: "Online", away: "Ausente", offline: "Offline" };
+const ORDEM_STATUS = { online: 0, away: 1, offline: 2 };
+
+function TransferirModal({ deps, usuarios, meId, atual, onClose, onOk }) {
   const [departmentId, setDep] = useState(atual?.departmentId || deps[0]?.id || "");
   const [userId, setUser] = useState("");
   const [comments, setComments] = useState("");
   const [erro, setErro] = useState("");
   const [salvando, setSalvando] = useState(false);
-  const daEquipe = usuarios.filter((u) => !departmentId || u.departmentIds.includes(departmentId) || u.isAdmin);
+  const daEquipe = usuarios
+    .filter((u) => !departmentId || u.departmentIds.includes(departmentId) || u.isAdmin)
+    .sort((a, b) => (ORDEM_STATUS[a.status] ?? 3) - (ORDEM_STATUS[b.status] ?? 3) || a.name.localeCompare(b.name));
   const confirmar = async () => {
     setSalvando(true);
     try {
@@ -1492,24 +1711,34 @@ function TransferirModal({ deps, usuarios, atual, onClose, onOk }) {
       setSalvando(false);
     }
   };
+  const destino = userId ? usuarios.find((u) => u.id === userId)?.name : "a fila";
   return (
-    <Modal titulo="Transferir chamado" onClose={onClose}>
+    <Modal titulo="Transferir chamado" subtitulo={atual?.protocol ? `Protocolo #${atual.protocol}` : undefined} icone="transfer" onClose={onClose} largura="520px">
       <label>Departamento
         <select value={departmentId} onChange={(e) => { setDep(e.target.value); setUser(""); }}>
-          {deps.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {deps.map((d) => <option key={d.id} value={d.id}>{d.name}{d.id === atual?.departmentId ? " (atual)" : ""}</option>)}
         </select>
       </label>
-      <label>Atendente
-        <select value={userId} onChange={(e) => setUser(e.target.value)}>
-          <option value="">Deixar na fila do departamento</option>
-          {daEquipe.map((u) => <option key={u.id} value={u.id}>{u.name}{u.status === "online" ? " · online" : ""}</option>)}
-        </select>
-      </label>
-      <label>Comentário (opcional)<textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={3} placeholder="Ex.: cliente quer falar sobre o boleto de novembro" /></label>
+      <div className="field-title">Quem vai atender</div>
+      <div className="pick-cards" role="radiogroup" aria-label="Quem vai atender">
+        <button type="button" role="radio" aria-checked={!userId} className={`pick-card ${!userId ? "sel" : ""}`} onClick={() => setUser("")}>
+          <span className="pick-radio" aria-hidden="true" />
+          <span className="pick-ico"><Icon name="inbox" size={17} /></span>
+          <span className="grow">Deixar na fila do departamento<small>Quem estiver livre assume</small></span>
+        </button>
+        {daEquipe.map((u) => (
+          <button key={u.id} type="button" role="radio" aria-checked={userId === u.id} className={`pick-card ${userId === u.id ? "sel" : ""}`} onClick={() => setUser(u.id)}>
+            <span className="pick-radio" aria-hidden="true" />
+            <span className="me-avatar"><Avatar nome={u.name} size={32} /><span className={`status-dot ${u.status}`} /></span>
+            <span className="grow">{u.name}{u.id === meId ? " (você)" : ""}<small>{STATUS_ATENDENTE[u.status] || u.status}{u.id === atual?.userId ? " · atendendo agora" : ""}</small></span>
+          </button>
+        ))}
+      </div>
+      <label>Comentário (opcional)<textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={2} placeholder="Ex.: cliente quer falar sobre o boleto de novembro" /></label>
       {erro && <div className="error">{erro}</div>}
       <div className="modal-actions">
         <button onClick={onClose}>Cancelar</button>
-        <button className="primary" disabled={salvando} onClick={confirmar}><Icon name="transfer" size={16} />{salvando ? "Transferindo…" : "Transferir"}</button>
+        <button className="primary" disabled={salvando} onClick={confirmar}><Icon name="transfer" size={16} />{salvando ? "Transferindo…" : `Transferir para ${destino}`}</button>
       </div>
     </Modal>
   );
@@ -1531,15 +1760,20 @@ function FecharModal({ assuntos, protocolo, onClose, onOk }) {
     }
   };
   return (
-    <Modal titulo={`Fechar chamado${protocolo ? ` #${protocolo}` : ""}`} onClose={onClose}>
+    <Modal titulo="Fechar chamado" subtitulo={protocolo ? `Protocolo #${protocolo}` : undefined} icone="check" onClose={onClose}>
       <div className="field-title">Assunto do atendimento</div>
-      <div className="checks">
-        {assuntos.length === 0 && <span className="muted small">Nenhum assunto cadastrado (Configurações → Assuntos).</span>}
-        {assuntos.map((a) => (
-          <label key={a.id} className="check"><input type="checkbox" checked={sel.includes(a.id)} onChange={() => toggle(a.id)} /> {a.name}</label>
-        ))}
+      <div className="toggle-chips" role="group" aria-label="Assunto do atendimento">
+        {assuntos.length === 0 && <span className="toggle-empty">Nenhum assunto cadastrado (Configurações → Assuntos).</span>}
+        {assuntos.map((a) => {
+          const on = sel.includes(a.id);
+          return (
+            <button key={a.id} type="button" aria-pressed={on} className={`toggle-chip ${on ? "on" : ""}`} onClick={() => toggle(a.id)}>
+              {on && <Icon name="check" size={14} />}{a.name}
+            </button>
+          );
+        })}
       </div>
-      <label>Comentário (opcional)<textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={3} /></label>
+      <label>Comentário (opcional)<textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={3} placeholder="Como o atendimento terminou" /></label>
       {erro && <div className="error">{erro}</div>}
       <div className="modal-actions">
         <button onClick={onClose}>Cancelar</button>

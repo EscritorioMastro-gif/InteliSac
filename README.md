@@ -73,6 +73,9 @@ cd C:\Users\gabri\projetos\InteliSac\frontend; npm run dev
 
 Abrir http://localhost:5180 e entrar com o usuário do seed (`SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` no `backend/.env`).
 
+Depois de atualizar o código (ex.: `git pull`), se o `frontend/package.json` mudou, rode `npm install` de novo
+na pasta `frontend` antes do `npm run dev` (ex.: as fontes da tela vêm de pacotes do npm).
+
 Testes do backend:
 
 ```bash
@@ -98,6 +101,23 @@ No dia a dia:
 - **Grupos**: viram uma conversa com o nome do grupo; cada mensagem mostra quem do grupo escreveu.
 - **Foto do contato**: baixada do WhatsApp em segundo plano e guardada no Storage
   (`<conta>/avatars/<contato>.jpg`); atualiza a cada 7 dias.
+
+## Tela e atalhos
+
+Visual em branco + verde petróleo, com títulos em Space Grotesk, texto em Manrope e códigos em JetBrains Mono.
+As fontes vêm dos pacotes `@fontsource-variable/*` e saem junto com o build (a CSP só aceita fonte do próprio site).
+
+- **Ctrl+K**: busca rápida — vai para qualquer tela, abre uma conversa pelo nome ou número e executa ações (status, som, avisos).
+- **Alt+↑ / Alt+↓**: conversa de cima / de baixo na lista do Atendimento.
+- **?** (fora de um campo de texto): mostra todos os atalhos.
+- **Rascunho por conversa**: o que você começou a escrever fica guardado naquela conversa (aparece "Rascunho:" na lista) e não vai junto para a próxima. Vale até recarregar a página.
+- **Links nas mensagens** (do cliente ou da equipe) ficam clicáveis e abrem em outra aba. Só viram link endereços com
+  `http://`, `https://` ou `www.`; passando o mouse aparece o endereço completo de destino.
+- **Rolagem da conversa**: só desce sozinha se você já estava no fim; lendo mais acima, aparece o botão ↓ com quantas mensagens novas chegaram.
+- **Menu lateral**: recolhe pelo botão no topo (fica lembrado no navegador) e recolhe sozinho em telas até 1100 px.
+  O número ao lado de **Atendimento** é quantos clientes esperam na fila (com o menu recolhido, vira um ponto).
+- **Meu status** (Online, Ausente, Offline), **Atalhos do teclado** e **Sair**: clique no seu nome no rodapé do menu.
+- Confirmações (apagar, excluir, desconectar, revogar) abrem uma janela do sistema com o foco em **Cancelar**: Enter sem querer não apaga nada.
 
 ## API (compatível com o formato do Digisac)
 
