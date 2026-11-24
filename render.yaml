@@ -12,8 +12,11 @@
 # está com `sync: false` (endereço do banco e chaves do Supabase). Os segredos (JWT e
 # API↔WhatsApp) são gerados pelo próprio Render.
 #
-# Publicar depois: Manual Deploy em cada serviço (autoDeployTrigger: off). As migrações
-# do banco rodam sozinhas quando a API liga.
+# Publicar depois: automático (autoDeployTrigger: commit). Cada push no main publica só o
+# serviço cuja pasta mudou (buildFilter): tela/API → intelisac; whatsapp-gateway/ →
+# intelisac-whatsapp. README e docs não publicam nada. As migrações do banco rodam
+# sozinhas quando a API liga, então uma migração nova vai direto para o Supabase.
+# Para voltar ao manual: autoDeployTrigger: "off" (e Manual Deploy no painel).
 #
 # Região: o Render não tem São Paulo; Virginia é a mais perto do banco (Supabase em SP).
 # ==========================================================================
@@ -37,7 +40,16 @@ services:
     buildCommand: bash render-build.sh
     startCommand: cd backend && uvicorn app.main:asgi --host 0.0.0.0 --port $PORT --no-server-header --proxy-headers
     healthCheckPath: /api/v1/health
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
+    # publica só quando muda a tela, a API ou o build (caminhos a partir da raiz do repositório)
+    buildFilter:
+      paths:
+        - backend/**
+        - frontend/**
+        - render-build.sh
+        - .python-version
+      ignoredPaths:
+        - backend/tests/**
     envVars:
       # Versão do Python: arquivo .python-version (3.13). Node do build: NODE_VERSION.
       - key: NODE_VERSION
@@ -77,7 +89,12 @@ services:
     rootDir: whatsapp-gateway
     buildCommand: npm ci
     startCommand: node server.js
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
+    # publica só quando muda o whatsapp-gateway/ (cada publicação deixa o WhatsApp alguns
+    # instantes fora; a sessão fica no disco e não pede QR de novo)
+    buildFilter:
+      paths:
+        - whatsapp-gateway/**
     disk:
       name: sessao-whatsapp
       mountPath: /var/data

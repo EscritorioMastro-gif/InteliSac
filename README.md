@@ -165,8 +165,17 @@ Banco, arquivos e login continuam no Supabase.
    2. feche o InteliSac do PC (os 3 servidores);
    3. no InteliSac do **Render**: Conexões → **Conectar** → leia o QR no celular.
 
-**Atualizar depois:** commit + push no GitHub e **Manual Deploy** nos 2 serviços
-(`autoDeployTrigger: off`: nada vai para o ar sem você mandar).
+**Atualizar depois:** é só commit + push no `main`. O Render publica sozinho (`autoDeployTrigger: commit`)
+e só o serviço cuja pasta mudou (`buildFilter`):
+
+- `backend/`, `frontend/`, `render-build.sh` ou `.python-version` → publica o `intelisac` (testes em `backend/tests/` não publicam);
+- `whatsapp-gateway/` → publica o `intelisac-whatsapp` (o WhatsApp fica alguns instantes fora; a sessão fica no disco e não pede QR de novo);
+- README e `docs/` → não publicam nada.
+
+Cuidado: **todo push no `main` vai para o ar**, inclusive migrações do banco (rodam quando a API liga, direto no
+Supabase). Para voltar ao modo manual, troque para `autoDeployTrigger: "off"` no `render.yaml` e use **Manual Deploy**.
+Mudanças no `render.yaml` são aplicadas pelo Blueprint a cada push (Auto Sync); mudar a mesma opção só no painel do
+Render não adianta, a próxima sincronização volta ao que está no arquivo.
 
 **Segurança no ar:** a API não sobe com chave faltando/fraca (`JWT_SECRET`, `GATEWAY_SECRET`,
 Supabase, banco Postgres), `/docs` fica fechado, o Simulador fica desligado (`ENABLE_SIMULATOR`)
